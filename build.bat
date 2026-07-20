@@ -30,12 +30,6 @@ echo [OK] updater.py
 echo Building...
 venv\Scripts\python.exe -m PyInstaller PalModManager.spec --noconfirm
 if %ERRORLEVEL% NEQ 0 (echo BUILD FAILED & exit /b 1)
-
-:: Normalize EXE name to PalModManager.exe (for consistent download URL)
-if exist "dist\PalModManager.exe" del /f "dist\PalModManager.exe" 2>nul
-for %%f in (dist\*.exe) do (
-    move /y "%%f" "dist\PalModManager.exe" >nul 2>&1
-)
 echo [OK] Built (dist\PalModManager.exe)
 
 :: 4. Git
