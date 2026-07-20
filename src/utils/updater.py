@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional, Callable
 
 
-CURRENT_VERSION = "1.1.9"
+CURRENT_VERSION = "1.1.10"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 
@@ -118,10 +118,12 @@ def apply_update(downloaded_path: str) -> bool:
             f.write(f'  move /y "{current_exe}" "{current_exe}.bak" 2>nul\r\n')
             f.write(':install\r\n')
             f.write(f'  copy /y "{downloaded_path}" "{current_exe}" 2>nul || goto :retry\r\n')
+            f.write(f'  ping 127.0.0.1 -n 3 >nul\r\n')
             f.write(f'  del "{downloaded_path}" 2>nul\r\n')
             f.write(f'  del "{current_exe}.bak" 2>nul\r\n')
             f.write(f'  echo Update OK >> "{current_exe}.log"\r\n')
             f.write(f'  start "" "{current_exe}"\r\n')
+            f.write(f'  ping 127.0.0.1 -n 3 >nul\r\n')
             f.write(f'  exit\r\n')
         # Use CREATE_NO_WINDOW + DETACHED_PROCESS to run invisibly
         DETACHED = 0x00000008

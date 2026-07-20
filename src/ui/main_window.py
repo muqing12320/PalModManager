@@ -1315,7 +1315,10 @@ class MainWindow(QMainWindow):
         
         if apply_update(saved):
             QMessageBox.information(self, "更新就绪", "下载完成，应用将自动关闭并更新。")
+            # Force exit to release file handle so .bat can replace EXE
             self.close()
+            QApplication.quit()
+            os._exit(0)
         else:
             QMessageBox.critical(self, "错误", "无法应用更新。")
 
