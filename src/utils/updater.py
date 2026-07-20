@@ -92,44 +92,47 @@ def download_update(url: str,
 
 
 def apply_update(downloaded_path: str) -> bool:
-    """Replace the running EXE and relaunch via a retry-loop .bat script.
+    """Replace the running EXE and relaunch using a VBScript helper.
     
-    The .bat waits up to 60s for the old EXE to unlock, then replaces it.
-    This is the most reliable Windows-native approach — no PowerShell needed.
+    VBScript (wscript) is always available on Windows, handles file
+    retries robustly, and launches new processes reliably.
     """
     current_exe = sys.executable
     if not current_exe.lower().endswith('.exe'):
         return False
     try:
-        bat = os.path.join(tempfile.gettempdir(), 'palmod_update.bat')
-        with open(bat, 'w', encoding='utf-8') as f:
-            f.write('@echo off\r\n')
-            # Start a log (for debugging)
-            f.write(f'echo Update started: {downloaded_path} ^>^> {current_exe} > "{current_exe}.log"\r\n')
-            # Max 60 seconds, checking every 2 seconds
-            f.write('set /a n=0\r\n')
-            f.write(':retry\r\n')
-            f.write(f'  ping 127.0.0.1 -n 3 >nul\r\n')
-            f.write(f'  del /f "{current_exe}" 2>nul\r\n')
-            f.write(f'  if not exist "{current_exe}" goto :install\r\n')
-            f.write( '  set /a n+=1\r\n')
-            f.write( '  if %n% LSS 30 goto :retry\r\n')
-            # Tried 30 times — force rename approach
-            f.write(f'  move /y "{current_exe}" "{current_exe}.bak" 2>nul\r\n')
-            f.write(':install\r\n')
-            f.write(f'  copy /y "{downloaded_path}" "{current_exe}" 2>nul || goto :retry\r\n')
-            f.write(f'  ping 127.0.0.1 -n 3 >nul\r\n')
-            f.write(f'  del "{downloaded_path}" 2>nul\r\n')
-            f.write(f'  del "{current_exe}.bak" 2>nul\r\n')
-            f.write(f'  echo Update OK >> "{current_exe}.log"\r\n')
-            f.write(f'  start "" "{current_exe}"\r\n')
-            f.write(f'  ping 127.0.0.1 -n 3 >nul\r\n')
-            f.write(f'  exit\r\n')
-        # Use CREATE_NO_WINDOW + DETACHED_PROCESS to run invisibly
-        DETACHED = 0x00000008
+        vbs_path = os.path.join(tempfile.gettempdir(), 'palmod_update.vbs')
+        # Build VBScript lines manually to avoid quoting hell
+        lines = [
+            'Set ws = CreateObject("WScript.Shell")',
+            'Set fs = CreateObject("Scripting.FileSystemObject")',
+            'exe = "' + current_exe.replace('\\', '\\\\') + '"',
+            'new = "' + downloaded_path.replace('\\', '\\\\') + '"',
+            'n = 0',
+            'Do While n < 60',
+            '  WScript.Sleep 1000',
+            '  On Error Resume Next',
+            '  fs.DeleteFile exe, True',
+            '  If Not fs.FileExists(exe) Then Exit Do',
+            '  On Error Goto 0',
+            '  n = n + 1',
+            'Loop',
+            'On Error Resume Next',
+            'fs.MoveFile exe, exe + ".bak"',
+            'On Error Goto 0',
+            'fs.CopyFile new, exe, True',
+            'WScript.Sleep 2000',
+            'On Error Resume Next',
+            'fs.DeleteFile new, True',
+            'fs.DeleteFile exe + ".bak", True',
+            'On Error Goto 0',
+            'ws.Run Chr(34) & exe & Chr(34), 1, False',
+        ]
+        with open(vbs_path, 'w', encoding='utf-8') as f:
+            f.write('\r\n'.join(lines))
         subprocess.Popen(
-            ['cmd', '/c', bat],
-            creationflags=DETACHED if sys.platform == 'win32' else 0,
+            ['wscript.exe', vbs_path],
+            creationflags=0x08000000 if sys.platform == 'win32' else 0,
             close_fds=True)
         return True
     except Exception:
