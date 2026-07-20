@@ -1314,8 +1314,9 @@ class MainWindow(QMainWindow):
             return
         
         if apply_update(saved):
-            QMessageBox.information(self, "更新就绪", "下载完成，应用将自动关闭并更新。")
-            # Force exit to release file handle so .bat can replace EXE
+            # Force exit immediately - wscript will replace and restart
+            self.status_bar.showMessage("更新已就绪，正在关闭...")
+            self.status_bar.repaint()
             self.close()
             QApplication.quit()
             os._exit(0)
