@@ -80,7 +80,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='帕鲁Mod管理器',
+    name='PalModManager',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

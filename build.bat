@@ -19,7 +19,7 @@ goto :ASK
 echo ======== Release v!VERSION! ========
 
 :: 1. version.json
-venv\Scripts\python.exe -c "import json,io;v='!VERSION!';json.dump({'version':v,'download_url':'https://github.com/muqing12320/PalModManager/releases/download/v'+v+'/Mod.exe','mirror_url':'https://zyx123.xyz/Mod.exe','notes':'v'+v},io.open('version.json','w',encoding='utf-8'),ensure_ascii=False)"
+venv\Scripts\python.exe -c "import json,io;v='!VERSION!';json.dump({'version':v,'download_url':'https://github.com/muqing12320/PalModManager/releases/download/v'+v+'/PalModManager.exe','mirror_url':'https://zyx123.xyz/PalModManager.exe','notes':'v'+v},io.open('version.json','w',encoding='utf-8'),ensure_ascii=False)"
 echo [OK] version.json
 
 :: 2. updater.py
@@ -30,7 +30,13 @@ echo [OK] updater.py
 echo Building...
 venv\Scripts\python.exe -m PyInstaller PalModManager.spec --noconfirm
 if %ERRORLEVEL% NEQ 0 (echo BUILD FAILED & exit /b 1)
-echo [OK] Built
+
+:: Normalize EXE name to PalModManager.exe (for consistent download URL)
+if exist "dist\PalModManager.exe" del /f "dist\PalModManager.exe" 2>nul
+for %%f in (dist\*.exe) do (
+    move /y "%%f" "dist\PalModManager.exe" >nul 2>&1
+)
+echo [OK] Built (dist\PalModManager.exe)
 
 :: 4. Git
 git add .
@@ -42,4 +48,4 @@ echo [OK] Pushed
 
 :: 5. Open release page
 start https://github.com/muqing12320/PalModManager/releases/new?tag=v!VERSION!^&title=v!VERSION!
-echo Open page and upload dist\Mod.exe
+echo Open page and upload dist\PalModManager.exe
