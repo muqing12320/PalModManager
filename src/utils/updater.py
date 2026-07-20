@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional, Callable
 
 
-CURRENT_VERSION = "1.1.6"
+CURRENT_VERSION = "1.1.7"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 
@@ -92,45 +92,43 @@ def download_update(url: str,
 
 
 def apply_update(downloaded_path: str) -> bool:
-    """Replace the running EXE and relaunch. Returns True on success.
+    """Replace the running EXE and relaunch via a retry-loop .bat script.
     
-    Two-stage: rename old EXE to .bak, copy new EXE in. The rename works
-    even if the original EXE is briefly locked.
+    The .bat waits up to 60s for the old EXE to unlock, then replaces it.
+    This is the most reliable Windows-native approach — no PowerShell needed.
     """
     current_exe = sys.executable
     if not current_exe.lower().endswith('.exe'):
         return False
     try:
-        ps1 = os.path.join(tempfile.gettempdir(), 'palmod_update.ps1')
-        with open(ps1, 'w', encoding='utf-8') as f:
-            f.write(
-                f'$ErrorActionPreference = "Stop"\n'
-                f'$new  = "{downloaded_path}"\n'
-                f'$exe  = "{current_exe}"\n'
-                f'$self = "{ps1}"\n'
-                f'$bak  = "$exe.bak"\n'
-                f'Start-Sleep -Seconds 3\n'
-                f'$tried = 0\n'
-                f'while ($tried -lt 10) {{\n'
-                f'    try {{\n'
-                f'        if (Test-Path $bak) {{ Remove-Item $bak -Force }}\n'
-                f'        Rename-Item $exe $bak -Force -ErrorAction Stop\n'
-                f'        Copy-Item $new $exe -Force -ErrorAction Stop\n'
-                f'        Remove-Item $new -Force\n'
-                f'        Remove-Item $self -Force\n'
-                f'        Start-Process $exe\n'
-                f'        exit 0\n'
-                f'    }} catch {{\n'
-                f'        Start-Sleep -Seconds 2\n'
-                f'        $tried++\n'
-                f'    }}\n'
-                f'}}\n'
-                f'Add-Content -Path "$exe.log" -Value "Update failed after 10 tries: $new -> $exe"\n'
-            )
+        bat = os.path.join(tempfile.gettempdir(), 'palmod_update.bat')
+        with open(bat, 'w', encoding='utf-8') as f:
+            f.write('@echo off\r\n')
+            # Start a log (for debugging)
+            f.write(f'echo Update started: {downloaded_path} ^>^> {current_exe} > "{current_exe}.log"\r\n')
+            # Max 60 seconds, checking every 2 seconds
+            f.write('set /a n=0\r\n')
+            f.write(':retry\r\n')
+            f.write(f'  ping 127.0.0.1 -n 3 >nul\r\n')
+            f.write(f'  del /f "{current_exe}" 2>nul\r\n')
+            f.write(f'  if not exist "{current_exe}" goto :install\r\n')
+            f.write( '  set /a n+=1\r\n')
+            f.write( '  if %n% LSS 30 goto :retry\r\n')
+            # Tried 30 times — force rename approach
+            f.write(f'  move /y "{current_exe}" "{current_exe}.bak" 2>nul\r\n')
+            f.write(':install\r\n')
+            f.write(f'  copy /y "{downloaded_path}" "{current_exe}" 2>nul || goto :retry\r\n')
+            f.write(f'  del "{downloaded_path}" 2>nul\r\n')
+            f.write(f'  del "{current_exe}.bak" 2>nul\r\n')
+            f.write(f'  echo Update OK >> "{current_exe}.log"\r\n')
+            f.write(f'  start "" "{current_exe}"\r\n')
+            f.write(f'  exit\r\n')
+        # Use CREATE_NO_WINDOW + DETACHED_PROCESS to run invisibly
+        DETACHED = 0x00000008
         subprocess.Popen(
-            ['powershell', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-             '-File', ps1],
-            shell=True, creationflags=0x08000000 if sys.platform == 'win32' else 0)
+            ['cmd', '/c', bat],
+            creationflags=DETACHED if sys.platform == 'win32' else 0,
+            close_fds=True)
         return True
     except Exception:
         return False
