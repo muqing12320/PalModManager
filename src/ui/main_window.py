@@ -318,10 +318,6 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("就绪")
         
-        # Auto-check for updates on startup (silently)
-        from PyQt5.QtCore import QTimer
-        QTimer.singleShot(3000, lambda: self._check_update(silent=True))
-        
         # Framework status indicator (permanent widget on right side)
         self.framework_status_label = QLabel("")
         self.framework_status_label.setStyleSheet("font-size: 11px; padding: 0 8px;")
@@ -1245,59 +1241,83 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "未找到UE4SS日志。")
     
     def _check_update(self, silent: bool = False):
-        """Check for updates using the built-in URL."""
-        from ..utils.updater import check_for_update, download_update, apply_update, CURRENT_VERSION, UPDATE_URL
-        
+        """Check for updates with download progress bar."""
         self.status_bar.showMessage("正在检查更新...")
+        try:
+            from ..utils.updater import check_for_update, download_update, apply_update, CURRENT_VERSION, UPDATE_URL
+        except Exception as e:
+            self.status_bar.showMessage(f"加载失败: {e}")
+            QMessageBox.warning(self, "错误", f"加载更新模块失败:\n{e}")
+            return
         
-        info = check_for_update(UPDATE_URL)
+        try:
+            info, err = check_for_update(UPDATE_URL)
+        except Exception as e:
+            self.status_bar.showMessage(f"检查失败: {e}")
+            QMessageBox.warning(self, "检查更新", f"检查更新时出错:\n{e}")
+            return
+        
         if info is None:
-            self.status_bar.showMessage("检查更新失败（网络错误）")
+            self.status_bar.showMessage("连接失败")
             if not silent:
-                QMessageBox.warning(self, "检查更新", "无法连接到更新服务器。\n请检查网络连接。")
+                QMessageBox.warning(self, "检查更新",
+                    f"无法连接到更新服务器。\n{err}\n\n"
+                    "请确认网络正常，或稍后重试。")
             return
         
         if not info:
             self.status_bar.showMessage(f"已是最新版本 ({CURRENT_VERSION})")
-            if not silent:
-                QMessageBox.information(self, "检查更新", f"已是最新版本！\n\n当前版本: {CURRENT_VERSION}")
             return
         
+        ver = info.get('version', CURRENT_VERSION)
         notes = info.get('notes', '')
         reply = QMessageBox.question(
             self, "发现新版本",
-            f"发现新版本: {info['version']}\n"
-            f"当前版本: {CURRENT_VERSION}\n\n"
-            + (f"更新内容:\n{notes}\n\n" if notes else "\n")
-            + "是否立即下载并安装更新？",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes,
-        )
-        
+            f"发现新版本: {ver}\n当前版本: {CURRENT_VERSION}\n\n"
+            + (f"更新内容:\n{notes}\n\n" if notes else "")
+            + "是否立即下载？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
         if reply != QMessageBox.Yes:
             return
         
-        download_url = info.get('download_url', '')
-        if not download_url:
-            QMessageBox.warning(self, "错误", "更新信息中没有下载地址。")
+        url = info.get('download_url', '')
+        if not url:
+            QMessageBox.warning(self, "错误", "没有下载地址。")
             return
         
-        self.status_bar.showMessage("正在下载更新...")
-        path = download_update(download_url)
+        from PyQt5.QtWidgets import QProgressDialog
+        progress = QProgressDialog("正在下载更新...", "取消", 0, 100, self)
+        progress.setWindowTitle("下载更新")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+        QApplication.processEvents()
         
-        if not path:
-            self.status_bar.showMessage("下载失败")
-            QMessageBox.critical(self, "错误", "下载更新失败。")
+        def on_progress(done, total):
+            if total > 0:
+                progress.setValue(int(done * 100 / total))
+                progress.setLabelText(
+                    f"下载中... {done/1048576:.1f} / {total/1048576:.1f} MB")
+            QApplication.processEvents()
+        
+        try:
+            saved = download_update(url, progress=on_progress)
+        except Exception as e:
+            progress.close()
+            QMessageBox.critical(self, "错误", f"下载失败:\n{e}")
             return
         
-        if apply_update(path):
-            self.status_bar.showMessage("即将安装更新并重启...")
-            QMessageBox.information(self, "更新就绪",
-                "更新已下载完毕。\n\n应用将自动关闭并更新。")
+        progress.close()
+        if not saved:
+            QMessageBox.critical(self, "错误", "下载失败。")
+            return
+        
+        if apply_update(saved):
+            QMessageBox.information(self, "更新就绪", "下载完成，应用将自动关闭并更新。")
             self.close()
         else:
             QMessageBox.critical(self, "错误", "无法应用更新。")
-    
+
     def _show_about(self):
         """Show the about dialog."""
         from ..utils.updater import CURRENT_VERSION
@@ -1451,5 +1471,5 @@ class MainWindow(QMainWindow):
         # Save window geometry
         self._config.set('window_geometry', self.saveGeometry().hex())
         self._config.set('window_state', self.saveState().hex())
-        
+
         event.accept()
