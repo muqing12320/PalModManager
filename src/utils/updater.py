@@ -1,4 +1,4 @@
-"""Auto-update checker for the application.
+﻿"""Auto-update checker for the application.
 
 Uses a lightweight HTTP approach — no SSL verification (acceptable for
 GitHub raw URLs).  Supports download progress reporting.
@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional, Callable
 
 
-CURRENT_VERSION = "1.0.0"
+CURRENT_VERSION = "1.1.0"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 
@@ -98,7 +98,20 @@ def apply_update(downloaded_path: str) -> bool:
 
 
 def _version_le(a: str, b: str) -> bool:
+    """Return True if a <= b.  Strips 'v' prefix and ignores non-numeric parts."""
+    def _norm(v: str) -> tuple:
+        v = v.lstrip('v').strip()
+        parts = []
+        for p in v.split('.'):
+            digits = ''
+            for c in p:
+                if c.isdigit():
+                    digits += c
+                else:
+                    break
+            parts.append(int(digits) if digits else 0)
+        return tuple(parts) if parts else (0,)
     try:
-        return tuple(int(x) for x in a.split('.')) <= tuple(int(x) for x in b.split('.'))
+        return _norm(a) <= _norm(b)
     except Exception:
         return True
