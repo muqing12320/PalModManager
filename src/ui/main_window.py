@@ -318,6 +318,10 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("就绪")
         
+        # Auto-check for updates on startup (silently)
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(3000, lambda: self._check_update(silent=True))
+        
         # Framework status indicator (permanent widget on right side)
         self.framework_status_label = QLabel("")
         self.framework_status_label.setStyleSheet("font-size: 11px; padding: 0 8px;")
@@ -1240,33 +1244,23 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.information(self, "提示", "未找到UE4SS日志。")
     
-    def _check_update(self):
-        """Check for updates from the configured update URL."""
-        from ..utils.updater import check_for_update, download_update, apply_update, CURRENT_VERSION
-        from ..utils.config import AppConfig
-        
-        config = AppConfig()
-        update_url = config.get('update_url', '')
-        
-        if not update_url:
-            QMessageBox.information(self, "检查更新",
-                f"当前版本: {CURRENT_VERSION}\n\n"
-                "请先在设置中配置「更新检查URL」。\n\n"
-                "格式: https://example.com/version.json\n"
-                "内容: {\"version\":\"1.0.1\",\"download_url\":\"...\",\"notes\":\"...\"}")
-            return
+    def _check_update(self, silent: bool = False):
+        """Check for updates using the built-in URL."""
+        from ..utils.updater import check_for_update, download_update, apply_update, CURRENT_VERSION, UPDATE_URL
         
         self.status_bar.showMessage("正在检查更新...")
         
-        info = check_for_update(update_url)
+        info = check_for_update(UPDATE_URL)
         if info is None:
-            self.status_bar.showMessage("检查更新失败（网络错误或URL无效）")
-            QMessageBox.warning(self, "检查更新", "无法连接到更新服务器。\n请检查网络或更新URL设置。")
+            self.status_bar.showMessage("检查更新失败（网络错误）")
+            if not silent:
+                QMessageBox.warning(self, "检查更新", "无法连接到更新服务器。\n请检查网络连接。")
             return
         
         if not info:
             self.status_bar.showMessage(f"已是最新版本 ({CURRENT_VERSION})")
-            QMessageBox.information(self, "检查更新", f"已是最新版本！\n\n当前版本: {CURRENT_VERSION}")
+            if not silent:
+                QMessageBox.information(self, "检查更新", f"已是最新版本！\n\n当前版本: {CURRENT_VERSION}")
             return
         
         notes = info.get('notes', '')

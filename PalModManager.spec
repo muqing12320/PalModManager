@@ -49,6 +49,7 @@ a = Analysis(
         'urllib.request',
         'urllib.error',
         'tempfile',
+        'ssl',
     ],
     hookspath=[],
     hooksconfig={},

@@ -276,22 +276,6 @@ class SettingsPage(QWidget):
         self.server_info_label.setStyleSheet("color: #484f58; font-size: 11px; padding-top: 4px;")
         layout.addWidget(self.server_info_label)
         
-        # 更新检查URL
-        update_label = QLabel("更新检查URL（版本JSON地址）:")
-        update_label.setStyleSheet("font-size: 11px; padding-top: 8px;")
-        layout.addWidget(update_label)
-        
-        self.update_url_input = QLineEdit()
-        self.update_url_input.setPlaceholderText("例如: https://example.com/palmod-version.json")
-        layout.addWidget(self.update_url_input)
-        
-        update_hint = QLabel(
-            'JSON格式: {"version":"1.0.1","download_url":"https://...","notes":"更新内容"}\n'
-            '建议使用GitHub Releases托管版本文件和EXE')
-        update_hint.setWordWrap(True)
-        update_hint.setStyleSheet("color: #8b949e; font-size: 10px; padding-bottom: 4px;")
-        layout.addWidget(update_hint)
-        
         # 同步按钮组
         svr_sync_layout = QHBoxLayout()
         
@@ -469,11 +453,7 @@ class SettingsPage(QWidget):
         if server_path:
             self._update_server_status(server_path)
         
-        update_url = self._config.get('update_url', '')
-        self.update_url_input.setText(update_url)
-        self.update_url_input.editingFinished.connect(
-            lambda: self._config.set('update_url', self.update_url_input.text().strip())
-        )
+        # Update URL is built-in — no longer configurable
     
     def _browse_game_path(self):
         """Open file dialog to select game path."""

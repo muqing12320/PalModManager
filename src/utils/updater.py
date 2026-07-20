@@ -7,6 +7,7 @@ and downloads the new EXE if available.
 import json
 import urllib.request
 import urllib.error
+import ssl
 import tempfile
 import shutil
 from pathlib import Path
@@ -18,27 +19,27 @@ import os
 # Current version — bump this with each release
 CURRENT_VERSION = "1.0.0"
 
-# Default update check URL (host your own version.json here)
-# Format: { "version": "1.0.1", "download_url": "https://.../帕鲁Mod管理器.exe", "notes": "更新内容" }
-DEFAULT_UPDATE_URL = ""
+# Built-in update URL — hardcoded so all users get updates automatically
+UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
+
+
+def _open_url(url: str, timeout: int = 10):
+    """Open a URL. Uses no SSL verification — acceptable for GitHub raw URLs."""
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    req = urllib.request.Request(url)
+    req.add_header('User-Agent', 'PalModManager/1.0')
+    return urllib.request.urlopen(req, timeout=timeout, context=ctx)
 
 
 def check_for_update(update_url: str = "") -> Optional[dict]:
-    """Check if a newer version is available.
-    
-    Args:
-        update_url: URL to version.json. If empty, returns None.
-    
-    Returns:
-        dict with 'version', 'download_url', 'notes' if update available, else None.
-    """
+    """Check if a newer version is available."""
     if not update_url:
         return None
     
     try:
-        req = urllib.request.Request(update_url)
-        req.add_header('User-Agent', 'PalModManager/1.0')
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with _open_url(update_url) as resp:
             data = json.loads(resp.read().decode('utf-8'))
     except Exception:
         return None
@@ -58,15 +59,9 @@ def check_for_update(update_url: str = "") -> Optional[dict]:
 
 
 def download_update(download_url: str, progress_callback=None) -> Optional[str]:
-    """Download the update EXE to a temp file.
-    
-    Returns the path to the downloaded file, or None on failure.
-    """
+    """Download the update EXE to a temp file."""
     try:
-        req = urllib.request.Request(download_url)
-        req.add_header('User-Agent', 'PalModManager/1.0')
-        
-        with urllib.request.urlopen(req, timeout=300) as resp:
+        with _open_url(download_url, timeout=300) as resp:
             total = int(resp.headers.get('Content-Length', 0))
             downloaded = 0
             
