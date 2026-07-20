@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional, Callable
 
 
-CURRENT_VERSION = "1.1.4"
+CURRENT_VERSION = "1.1.5"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 
@@ -92,22 +92,29 @@ def download_update(url: str,
 
 
 def apply_update(downloaded_path: str) -> bool:
-    """Replace the running EXE and relaunch. Returns True on success."""
+    """Replace the running EXE and relaunch. Returns True on success.
+    
+    Two-stage: rename old EXE to .bak, copy new EXE in. The rename works
+    even if the original EXE is briefly locked.
+    """
     current_exe = sys.executable
     if not current_exe.lower().endswith('.exe'):
         return False
-    # For PyInstaller --onefile, sys.executable is the real EXE path
     try:
         ps1 = os.path.join(tempfile.gettempdir(), 'palmod_update.ps1')
         with open(ps1, 'w', encoding='utf-8') as f:
             f.write(
+                f'$ErrorActionPreference = "Stop"\n'
                 f'$new  = "{downloaded_path}"\n'
                 f'$exe  = "{current_exe}"\n'
                 f'$self = "{ps1}"\n'
-                f'Start-Sleep -Seconds 5\n'
+                f'$bak  = "$exe.bak"\n'
+                f'Start-Sleep -Seconds 3\n'
                 f'$tried = 0\n'
-                f'while ($tried -lt 5) {{\n'
+                f'while ($tried -lt 10) {{\n'
                 f'    try {{\n'
+                f'        if (Test-Path $bak) {{ Remove-Item $bak -Force }}\n'
+                f'        Rename-Item $exe $bak -Force -ErrorAction Stop\n'
                 f'        Copy-Item $new $exe -Force -ErrorAction Stop\n'
                 f'        Remove-Item $new -Force\n'
                 f'        Remove-Item $self -Force\n'
@@ -118,6 +125,7 @@ def apply_update(downloaded_path: str) -> bool:
                 f'        $tried++\n'
                 f'    }}\n'
                 f'}}\n'
+                f'Add-Content -Path "$exe.log" -Value "Update failed after 10 tries: $new -> $exe"\n'
             )
         subprocess.Popen(
             ['powershell', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
