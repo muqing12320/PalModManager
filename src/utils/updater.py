@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional, Callable
 
 
-CURRENT_VERSION = "1.1.2"
+CURRENT_VERSION = "1.1.3"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 
@@ -39,6 +39,8 @@ def check_for_update(url: str = UPDATE_URL) -> tuple:
         remote = data.get('version', '')
         if not remote:
             return None, "No version field"
+        # Pass mirror URL through for download phase
+        data['_mirror'] = data.get('mirror_url', '')
         if _version_le(remote, CURRENT_VERSION):
             return {}, ""
         return data, ""
@@ -48,34 +50,45 @@ def check_for_update(url: str = UPDATE_URL) -> tuple:
 
 def download_update(url: str,
                     progress: Optional[Callable[[int, int], None]] = None,
+                    mirror: str = '',
                     ) -> Optional[str]:
-    """Download the update EXE to a temp file.
+    """Download the update EXE. Tries primary URL first, then mirror.
     
     *progress(downloaded_bytes, total_bytes)* is called during download.
     Returns the path to the downloaded file, or None on failure.
     """
-    try:
-        req = urllib.request.Request(url)
-        req.add_header('User-Agent', 'PalModManager/1.0')
-        ctx = _make_ssl_context()
-        with urllib.request.urlopen(req, timeout=300, context=ctx) as resp:
-            total = int(resp.headers.get('Content-Length', 0))
-            downloaded = 0
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.exe')
-            try:
-                while True:
-                    chunk = resp.read(65536)
-                    if not chunk:
-                        break
-                    tmp.write(chunk)
-                    downloaded += len(chunk)
-                    if progress:
-                        progress(downloaded, total or downloaded)
-            finally:
-                tmp.close()
-            return tmp.name
-    except Exception:
-        return None
+    BUFFER = 512 * 1024  # 512KB chunks for faster throughput
+    
+    def _try_download(dl_url: str) -> Optional[str]:
+        try:
+            req = urllib.request.Request(dl_url)
+            req.add_header('User-Agent', 'PalModManager/1.0')
+            ctx = _make_ssl_context()
+            with urllib.request.urlopen(req, timeout=300, context=ctx) as resp:
+                total = int(resp.headers.get('Content-Length', 0))
+                downloaded = 0
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.exe')
+                try:
+                    while True:
+                        chunk = resp.read(BUFFER)
+                        if not chunk:
+                            break
+                        tmp.write(chunk)
+                        downloaded += len(chunk)
+                        if progress:
+                            progress(downloaded, total or downloaded)
+                finally:
+                    tmp.close()
+                return tmp.name
+        except Exception:
+            return None
+    
+    result = _try_download(url)
+    if result:
+        return result
+    if mirror:
+        return _try_download(mirror)
+    return None
 
 
 def apply_update(downloaded_path: str) -> bool:

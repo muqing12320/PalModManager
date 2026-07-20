@@ -1302,7 +1302,7 @@ class MainWindow(QMainWindow):
             QApplication.processEvents()
         
         try:
-            saved = download_update(url, progress=on_progress)
+            saved = download_update(url, progress=on_progress, mirror=info.get('_mirror', ''))
         except Exception as e:
             progress.close()
             QMessageBox.critical(self, "错误", f"下载失败:\n{e}")

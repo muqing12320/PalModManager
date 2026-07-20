@@ -125,6 +125,7 @@ class ModManager:
         if success:
             mod.status = ModStatus.ENABLED
             mod.last_updated = datetime.now().isoformat()
+            self._update_ue4ss_mods_txt()
             self._notify_change()
         
         return success
@@ -152,6 +153,7 @@ class ModManager:
         if success:
             mod.status = ModStatus.DISABLED
             mod.last_updated = datetime.now().isoformat()
+            self._update_ue4ss_mods_txt()
             self._notify_change()
         
         return success
@@ -211,9 +213,6 @@ class ModManager:
                     mod_path.rename(new_path)
                     mod.install_path = str(new_path)
             
-            # Update mods.txt for UE4SS
-            self._update_ue4ss_mods_txt()
-            
             return True
         except Exception:
             return False
@@ -235,9 +234,6 @@ class ModManager:
             enable_file = mod_path / "enabled.txt"
             if enable_file.exists():
                 enable_file.unlink()
-            
-            # Update mods.txt for UE4SS
-            self._update_ue4ss_mods_txt()
             
             return True
         except Exception:
