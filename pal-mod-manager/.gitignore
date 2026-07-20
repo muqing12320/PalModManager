@@ -1,0 +1,11 @@
+﻿# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 构建产物
+build/
+dist/
+*.spec.bak
+.idea/
+.vscode/
