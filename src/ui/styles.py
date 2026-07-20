@@ -196,6 +196,25 @@ def get_toolbar_button_style(btn_type='default'):
                 }
                 QPushButton:hover { background-color: #ffd4d1; border-color: #cf222e; }
             """
+    elif btn_type == 'update':
+        if dark:
+            return base + """
+                QPushButton {
+                    background-color: #1b332b;
+                    color: #3fb950;
+                    border: 1px solid #3fb95044;
+                }
+                QPushButton:hover { background-color: #2a4435; border-color: #3fb950; }
+            """
+        else:
+            return base + """
+                QPushButton {
+                    background-color: #dafbe1;
+                    color: #1a7f37;
+                    border: 1px solid #1a7f3744;
+                }
+                QPushButton:hover { background-color: #b8eec5; border-color: #1a7f37; }
+            """
     
     else:  # default
         return base

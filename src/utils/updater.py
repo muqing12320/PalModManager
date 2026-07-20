@@ -11,11 +11,12 @@ import ssl
 import tempfile
 import os
 import sys
+import subprocess
 from pathlib import Path
 from typing import Optional, Callable
 
 
-CURRENT_VERSION = "1.1.1"
+CURRENT_VERSION = "1.1.2"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 
@@ -78,20 +79,37 @@ def download_update(url: str,
 
 
 def apply_update(downloaded_path: str) -> bool:
-    """Replace the running EXE via a helper batch script."""
+    """Replace the running EXE and relaunch. Returns True on success."""
     current_exe = sys.executable
     if not current_exe.lower().endswith('.exe'):
         return False
+    # For PyInstaller --onefile, sys.executable is the real EXE path
     try:
-        batch = os.path.join(tempfile.gettempdir(), 'palmod_update.bat')
-        with open(batch, 'w', encoding='utf-8') as f:
-            f.write('@echo off\n')
-            f.write('ping 127.0.0.1 -n 3 >nul\n')
-            f.write(f'copy /y "{downloaded_path}" "{current_exe}"\n')
-            f.write(f'del "{downloaded_path}"\n')
-            f.write(f'del "%~f0"\n')
-            f.write(f'start "" "{current_exe}"\n')
-        os.startfile(batch)
+        ps1 = os.path.join(tempfile.gettempdir(), 'palmod_update.ps1')
+        with open(ps1, 'w', encoding='utf-8') as f:
+            f.write(
+                f'$new  = "{downloaded_path}"\n'
+                f'$exe  = "{current_exe}"\n'
+                f'$self = "{ps1}"\n'
+                f'Start-Sleep -Seconds 5\n'
+                f'$tried = 0\n'
+                f'while ($tried -lt 5) {{\n'
+                f'    try {{\n'
+                f'        Copy-Item $new $exe -Force -ErrorAction Stop\n'
+                f'        Remove-Item $new -Force\n'
+                f'        Remove-Item $self -Force\n'
+                f'        Start-Process $exe\n'
+                f'        exit 0\n'
+                f'    }} catch {{\n'
+                f'        Start-Sleep -Seconds 2\n'
+                f'        $tried++\n'
+                f'    }}\n'
+                f'}}\n'
+            )
+        subprocess.Popen(
+            ['powershell', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+             '-File', ps1],
+            shell=True, creationflags=0x08000000 if sys.platform == 'win32' else 0)
         return True
     except Exception:
         return False

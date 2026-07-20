@@ -171,13 +171,14 @@ class MainWindow(QMainWindow):
         # 帮助菜单
         help_menu = menubar.addMenu("帮助")
         
-        update_action = QAction("检查更新...", self)
-        update_action.triggered.connect(self._check_update)
-        help_menu.addAction(update_action)
-        
         about_action = QAction("关于", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
+        
+        # "检查更新" button next to 帮助 (top-level action on menubar)
+        update_action = QAction("检查更新", self)
+        update_action.triggered.connect(self._check_update)
+        menubar.addAction(update_action)
     
     def _create_toolbar(self):
         """Create the toolbar."""
