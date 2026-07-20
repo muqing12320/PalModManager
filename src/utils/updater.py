@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional, Callable
 
 
-CURRENT_VERSION = "1.1.5"
+CURRENT_VERSION = "1.1.6"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 
