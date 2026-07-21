@@ -8,14 +8,13 @@ import time
 import zipfile
 import subprocess
 from pathlib import Path
-from typing import Optional
 from datetime import datetime
 
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QToolBar, QAction, QMenu, QMenuBar, QStatusBar, QTabWidget,
     QMessageBox, QFileDialog, QApplication, QLabel, QPushButton,
-    QStyle, QSizePolicy, QFrame,
+    QSizePolicy,
 )
 from PyQt5.QtCore import Qt, QTimer, QSize, QThread, pyqtSignal
 from PyQt5.QtGui import QIcon, QFont
@@ -179,6 +178,10 @@ class MainWindow(QMainWindow):
         import_action = QAction("导入Mod列表...", self)
         import_action.triggered.connect(self._import_mod_list)
         file_menu.addAction(import_action)
+        
+        scan_collection_action = QAction("扫描Mod合集目录...", self)
+        scan_collection_action.triggered.connect(self._scan_mod_collection)
+        file_menu.addAction(scan_collection_action)
         
         file_menu.addSeparator()
         
@@ -964,8 +967,6 @@ class MainWindow(QMainWindow):
     
     def _save_mod_metadata(self, mod: 'ModInfo', custom_name: str):
         """Save mod metadata (custom name) to a mod.json file in the mod directory."""
-        import json
-        
         mod_path = Path(mod.install_path)
         if mod_path.is_file():
             mod_path = mod_path.parent
@@ -1232,6 +1233,93 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("导入失败")
             QMessageBox.critical(self, "错误", f"导入失败:\n{str(e)}")
     
+    def _scan_mod_collection(self):
+        """Scan an organized mod collection directory and show the mods found."""
+        mgr = self._get_active_manager()
+        if not mgr:
+            QMessageBox.warning(self, "提示", "请先在设置中配置路径。")
+            return
+
+        path = QFileDialog.getExistingDirectory(
+            self, "选择 Mod 合集目录",
+            self._config.get('last_collection_path', ''))
+        if not path:
+            return
+        self._config.set('last_collection_path', path)
+
+        self.status_bar.showMessage("正在扫描合集目录...")
+        try:
+            collection_mods = mgr.scan_collection(path)
+        except Exception as e:
+            self.status_bar.showMessage("扫描失败")
+            QMessageBox.critical(self, "错误", f"扫描合集目录失败:\n{str(e)}")
+            return
+
+        if not collection_mods:
+            QMessageBox.information(
+                self, "扫描结果",
+                "未在该目录中发现可识别的 Mod。\n\n"
+                "支持的格式：\n"
+                "• 含 Pal/ 子目录的 Mod 文件夹（如 分类/Mod名/Pal/Content/...）\n"
+                "• 平铺的 .pak / .lua 文件（可带同名 .txt 说明）")
+            self.status_bar.showMessage("就绪")
+            return
+
+        # Merge with currently installed mods and display
+        try:
+            installed = mgr.refresh()
+        except Exception:
+            installed = []
+        merged = list(installed) + collection_mods
+        self.mod_list_widget.set_mods(merged)
+
+        n_collection = len(collection_mods)
+        self.status_bar.showMessage(
+            f"扫描完成：发现 {n_collection} 个合集 Mod（已并入列表，带「合集」标签）")
+
+        reply = QMessageBox.question(
+            self, "导入合集 Mod",
+            f"发现 {n_collection} 个合集 Mod。\n\n"
+            "是否将全部合集 Mod 导入到当前游戏/服务器目录？\n"
+            "（取消则仅预览，可稍后在列表中选择性处理）",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+        if reply == QMessageBox.Cancel:
+            return
+        if reply == QMessageBox.No:
+            return
+
+        self._import_collection_mods(collection_mods)
+
+    def _import_collection_mods(self, collection_mods: list):
+        """Import the scanned collection mods into the active game/server dir."""
+        mgr = self._get_active_manager()
+        if not mgr:
+            return
+        success = skip = 0
+        errors = []
+        for mod in collection_mods:
+            src = mod.raw_metadata.get('collection_path')
+            if not src or not os.path.isdir(src):
+                # Fallback: try the mod's own folder via source_path's parent
+                src = os.path.dirname(mod.source_path)
+            if not src or not os.path.isdir(src):
+                errors.append(f"{mod.name}: 找不到来源文件夹")
+                continue
+            try:
+                s, sk, err = mgr.import_mod_pack(src)
+                success += s
+                skip += sk
+                errors.extend(err)
+            except Exception as e:
+                errors.append(f"{mod.name}: {str(e)}")
+        self._refresh_mods()
+        msg = f"成功: {success} 个\n跳过（已存在）: {skip} 个"
+        if errors:
+            msg += f"\n\n错误:\n" + "\n".join(errors[:10])
+            QMessageBox.warning(self, "导入结果", msg)
+        else:
+            QMessageBox.information(self, "导入完成", msg + "\n\n导入完成！")
+
     def _launch_game(self):
         """Launch Palworld or PalServer based on current mode."""
         if self._current_mode == 'server':

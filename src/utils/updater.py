@@ -6,7 +6,6 @@ GitHub raw URLs).  Supports download progress reporting.
 
 import json
 import urllib.request
-import urllib.error
 import ssl
 import tempfile
 import os
@@ -15,11 +14,10 @@ import subprocess
 import shutil
 import time
 import threading
-from pathlib import Path
 from typing import Optional, Callable
 
 
-CURRENT_VERSION = "1.1.17"
+CURRENT_VERSION = "1.2.0"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 

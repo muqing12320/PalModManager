@@ -66,6 +66,10 @@ class ModManager:
             except Exception:
                 pass
     
+    def scan_collection(self, collection_path: str) -> List['ModInfo']:
+        """Scan an organized mod collection directory and return discovered mods."""
+        return self.scanner.scan_collection(collection_path)
+
     def refresh(self) -> List[ModInfo]:
         """Refresh the mod list from disk."""
         scanned = self.scanner.scan_all()

@@ -92,7 +92,128 @@ class ModScanner:
         mods.extend(self.scan_logicmods_paks())
         mods.extend(self.scan_palschema_mods())
         return self._deduplicate_mods(mods)
-    
+
+    # ------------------------------------------------------------------
+    # Collection scanning (整理好的 mod 合集目录，如 "幻兽帕鲁Mod合集")
+    # ------------------------------------------------------------------
+    def scan_collection(self, collection_path: str) -> List[ModInfo]:
+        """Scan an organized mod collection directory.
+
+        Recognizes the common palworld collection layout, e.g.:
+            <collection>/
+                1_mod/<ModName>/Pal/Content/... (+ 使用说明.txt in <ModName>)
+                分类文件夹/<ModName>/Pal/Content/... (+ 使用说明.txt)
+                <ModName>.pak / <ModName>.lua (flat, with optional <ModName>.txt)
+
+        Returns a list of ModInfo discovered inside that collection. The
+        discovered mods carry an extra ``raw_metadata['collection_path']``
+        so the UI can offer one-click import.
+        """
+        root = Path(collection_path)
+        if not root.is_dir():
+            return []
+
+        # Skip non-standard bundle directories whose internal layout we cannot
+        # reliably parse (e.g. 游侠/ali213 汉化整合包 uses a '*/files/' layout
+        # that would otherwise surface the literal name "files" as a mod name).
+        excluded = {p for p in root.iterdir()
+                    if p.is_dir() and p.name.lower().startswith('ali213')}
+
+        def _in_excluded(p: Path) -> bool:
+            return any(parent in excluded for parent in p.parents)
+
+        mods: List[ModInfo] = []
+        seen: set = set()
+
+        def _add(mod: Optional[ModInfo]):
+            if mod and mod.id not in seen:
+                seen.add(mod.id)
+                mods.append(mod)
+
+        # 1) Flat .pak / .lua files directly under the collection (and one level deep)
+        for base in (root, *[p for p in root.iterdir() if p.is_dir() and p not in excluded]):
+            for item in base.iterdir():
+                if not item.is_file():
+                    continue
+                lower = item.name.lower()
+                if lower.endswith('.pak'):
+                    _add(self._scan_pak_file(item, collection_mode=True))
+                elif lower.endswith('.lua'):
+                    _add(self._scan_lua_file(item, collection_mode=True))
+
+        # 2) Mod subfolders that contain a 'Pal' directory (Pal-root layout)
+        for item in root.rglob('*'):
+            if _in_excluded(item):
+                continue
+            if not item.is_dir():
+                continue
+            if item.name.lower() != 'pal':
+                continue
+            pal_dir = item
+            mod_root = pal_dir.parent  # the mod's own folder
+            # skip nested Paks/Content etc. — only the top Pal-root qualifies
+            if (pal_dir / 'Content').is_dir() or (pal_dir / 'Binaries').is_dir():
+                _add(self._scan_palroot_mod(mod_root, collection_path))
+
+        return mods
+
+    def _scan_palroot_mod(self, mod_root: Path, collection_path: str) -> Optional[ModInfo]:
+        """Scan a Pal-root mod folder (contains Pal/Content)."""
+        pal_dir = mod_root / 'Pal'
+        if not pal_dir.is_dir():
+            return None
+
+        # Gather the actual content files to decide type & name
+        paks = list((pal_dir / 'Content' / 'Paks').rglob('*.pak')) if (pal_dir / 'Content' / 'Paks').is_dir() else []
+        lua_dir = pal_dir / 'Content' / 'Paks' / 'LogicMods'
+        luas = list(lua_dir.rglob('*.lua')) if lua_dir.is_dir() else []
+
+        if paks:
+            primary = paks[0]
+            mod = self._scan_pak_file(primary, collection_mode=True)
+            mod.install_path = str(mod_root)
+        elif luas:
+            primary = luas[0]
+            mod = self._scan_lua_file(primary, collection_mode=True)
+            mod.install_path = str(mod_root)
+        else:
+            # Pal-root without recognizable content
+            return None
+
+        mod.name = mod_root.name
+        mod.source_path = str(mod_root)
+        # Description: look in mod root (parent_lookup=True handles Pal/ nesting)
+        desc = self._read_usage_instructions(pal_dir, mod_name=mod_root.name, parent_lookup=True)
+        if not desc:
+            desc = self._read_usage_instructions(mod_root)
+        mod.description = desc
+        mod.raw_metadata['collection_path'] = str(mod_root)
+        mod.tags = list(mod.tags) + ['合集']
+        mod.is_auto_managed = False
+        return mod
+
+    def _scan_lua_file(self, lua_file: Path, collection_mode: bool = False) -> Optional[ModInfo]:
+        """Scan a standalone .lua file (used for flat collection entries)."""
+        mod_name = lua_file.stem
+        mod_info = ModInfo(
+            id=f"lua_{lua_file.resolve()}",
+            name=mod_name,
+            version="1.0.0",
+            author="Unknown",
+            mod_type=ModType.UE4SS_LUA,
+            status=ModStatus.UNKNOWN,
+            install_path=str(lua_file.parent),
+            source_path=str(lua_file),
+            ue4ss_main_script=str(lua_file),
+        )
+        desc = self._read_usage_instructions(lua_file.parent, mod_name=mod_name)
+        mod_info.description = desc
+        if collection_mode:
+            mod_info.is_auto_managed = False
+            mod_info.tags = list(mod_info.tags) + ['合集']
+            mod_info.raw_metadata['collection_path'] = str(lua_file.parent)
+        return mod_info
+
     def scan_ue4ss_lua_mods(self) -> List[ModInfo]:
         """Scan for UE4SS Lua script mods in the Mods directory.
         Excludes UE4SS built-in modules and framework directories."""
@@ -326,40 +447,100 @@ class ModScanner:
             raw_metadata=metadata,
         )
     
-    def _read_usage_instructions(self, directory: Path, mod_name: str = None) -> str:
+    def _read_usage_instructions(self, directory: Path, mod_name: str = None,
+                                  parent_lookup: bool = False) -> str:
         """Read usage instructions from 使用说明.txt, README.md, etc.
-        If mod_name is provided, only match files specifically for that mod
-        (e.g. 'NoBuildingCost_P_使用说明.txt' for 'NoBuildingCost_P.pak').
+
+        If mod_name is provided (e.g. for a .pak mod), only files clearly
+        belonging to that mod are considered: name-prefixed text files
+        ('CoolMod.txt', 'CoolMod.md', 'CoolMod使用说明.txt', ...). A secondary
+        attempt with a trailing '_P' suffix stripped matches companion files
+        named after the original mod (Vortex convention, e.g. 'CoolMod.txt'
+        for 'CoolMod_P.pak'). Keyword files (说明/使用/readme/...) are preferred
+        but any name-prefixed text file is accepted, so client .pak mods that
+        ship a plain readme next to the .pak now get a description too.
         Generic fallback is only used when mod_name is NOT provided
-        (for UE4SS mod directories where one 使用说明.txt describes one mod).
+        (for UE4SS/Logic mod directories where one 使用说明.txt describes one mod).
+
+        If parent_lookup is True, the parent directory is also searched for a
+        generic instruction file (e.g. '使用说明.txt' sitting in the mod's own
+        folder while the .pak/.lua lives in a nested 'Pal/' subfolder).
         """
         if not directory.is_dir():
             return ""
-        
-        # First, look for mod-specific instruction files (only when mod_name provided)
+
+        text_suffixes = ('.txt', '.md', '.markdown')
+        skip_keywords = ('changelog', 'license', 'licence', '版权', 'disabled', '_disabled')
+        prefer_keywords = ('说明', '使用', 'readme', '指南', 'info', '描述', '介绍')
+
+        # --- mod_name aware search within `directory` ---
         if mod_name:
-            for f in directory.iterdir():
-                if f.is_file():
-                    lower = f.name.lower()
-                    # Only match text files (skip .pak, .json, etc.)
-                    if not lower.endswith(('.txt', '.md')):
+            def _candidate_text(f: Path) -> str:
+                lower = f.name.lower()
+                if not lower.startswith(prefix.lower()):
+                    return ""
+                if not lower.endswith(text_suffixes):
+                    return ""
+                if any(k in lower for k in skip_keywords):
+                    return ""
+                return self._read_and_trim(f)
+
+            # Exact name prefix first, then prefix with a trailing '_P' stripped
+            prefixes = [mod_name]
+            if mod_name.lower().endswith('_p'):
+                prefixes.append(mod_name[:-2])
+
+            best_any = ""
+            for prefix in prefixes:
+                preferred = ""
+                for f in directory.iterdir():
+                    if not f.is_file():
                         continue
-                    if lower.startswith(mod_name.lower()) and ('说明' in f.name or '使用' in f.name or 'readme' in lower or '指南' in f.name):
-                        return self._read_and_trim(f)
-            # When mod_name is provided, do NOT fall back to generic files
-            # (otherwise all PAK mods in the same directory share the first mod's instructions)
-            return ""
-        
-        # Generic fallback only when no mod_name is provided
-        # (for UE4SS mod directories where one 使用说明.txt describes one mod)
+                    text = _candidate_text(f)
+                    if not text:
+                        continue
+                    if any(k in f.name.lower() for k in prefer_keywords):
+                        preferred = text
+                        break
+                    if not best_any:
+                        best_any = text
+                if preferred:
+                    return preferred
+            if best_any:
+                return best_any
+
+        # Generic keyword search within `directory`
         for f in directory.iterdir():
             if f.is_file():
                 lower = f.name.lower()
-                if not lower.endswith(('.txt', '.md')):
+                if not lower.endswith(text_suffixes):
                     continue
-                if '说明' in f.name or '使用' in f.name or 'readme' in lower or '指南' in f.name:
+                # keyword check (with parent_lookup, also accept any plain
+                # instruction file living in the same folder as the .pak)
+                if '说明' in f.name or '使用' in f.name or 'readme' in lower or '指南' in f.name \
+                        or (parent_lookup and '说明' in f.name):
                     return self._read_and_trim(f)
-        
+
+        # --- parent folder lookup (mod folder root holding the .pak in Pal/) ---
+        if parent_lookup:
+            parent = directory.parent
+            if parent.is_dir() and parent != directory:
+                for f in parent.iterdir():
+                    if f.is_file():
+                        lower = f.name.lower()
+                        if not lower.endswith(text_suffixes):
+                            continue
+                        if '说明' in f.name or '使用' in f.name or 'readme' in lower or '指南' in f.name:
+                            return self._read_and_trim(f)
+                # also accept a generic description file in the mod root
+                for f in parent.iterdir():
+                    if f.is_file() and f.name.lower().endswith(text_suffixes) \
+                            and not any(k in f.name.lower() for k in skip_keywords):
+                        # avoid grabbing unrelated changelog/license; require a
+                        # descriptive name or fall back only when nothing else matched
+                        if any(k in f.name for k in prefer_keywords):
+                            return self._read_and_trim(f)
+
         return ""
     
     def _read_and_trim(self, file: Path) -> str:
@@ -434,7 +615,7 @@ class ModScanner:
             raw_metadata=metadata,
         )
     
-    def _scan_pak_file(self, pak_file: Path) -> Optional[ModInfo]:
+    def _scan_pak_file(self, pak_file: Path, collection_mode: bool = False) -> Optional[ModInfo]:
         """Scan a .pak mod file."""
         mod_id = hashlib.md5(str(pak_file).encode()).hexdigest()[:12]
         
@@ -457,7 +638,8 @@ class ModScanner:
         # Auto-read usage instructions if description is empty
         # For PAK files, only look for files specifically named for this PAK
         if not description:
-            description = self._read_usage_instructions(pak_file.parent, mod_name=pak_file.stem)
+            description = self._read_usage_instructions(
+                pak_file.parent, mod_name=pak_file.stem, parent_lookup=collection_mode)
         
         # If still no description, try the LogicMods counterpart
         if not description and self.logicmods_paks_dir.exists():
@@ -470,8 +652,9 @@ class ModScanner:
                 except Exception:
                     pass
         
-        # Write description back to companion JSON so it persists
-        if description and not metadata.get('description'):
+        # Write description back to companion JSON so it persists (skip in
+        # collection mode to avoid polluting the user's shared mod collection)
+        if description and not metadata.get('description') and not collection_mode:
             metadata['description'] = description
             try:
                 json_file = json_path or pak_file.with_name(pak_file.stem + '.json')
@@ -493,15 +676,16 @@ class ModScanner:
             description=description,
             mod_type=ModType.PAK,
             status=ModStatus.DISABLED if is_disabled else ModStatus.ENABLED,
-            install_path=str(pak_file),
+            install_path=str(pak_file.parent) if collection_mode else str(pak_file),
             source_path=str(pak_file),
             dependencies=metadata.get('dependencies', []),
             required_frameworks=[],
             website=metadata.get('website', metadata.get('url', '')),
-            tags=metadata.get('tags', []),
+            tags=(list(metadata.get('tags', [])) + ['合集']) if collection_mode else metadata.get('tags', []),
             installed_date=datetime.fromtimestamp(pak_file.stat().st_ctime).isoformat(),
             last_updated=datetime.fromtimestamp(pak_file.stat().st_mtime).isoformat(),
-            raw_metadata=metadata,
+            is_auto_managed=not collection_mode,
+            raw_metadata={**metadata, 'collection_path': str(pak_file.parent)} if collection_mode else metadata,
         )
     
     def _scan_palschema_mod_directory(self, directory: Path, config_files: List[Path]) -> Optional[ModInfo]:
