@@ -17,7 +17,7 @@ import threading
 from typing import Optional, Callable
 
 
-CURRENT_VERSION = "1.2.1"
+CURRENT_VERSION = "1.2.2"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 
@@ -107,13 +107,19 @@ def _download_parallel(dl_url: str,
                        progress: Optional[Callable[[int, int], None]] = None,
                        cancel_check: Optional[Callable[[], bool]] = None,
                        parts: int = 4,
-                       read_timeout: int = 20
+                       read_timeout: int = 20,
+                       retries: int = 2
                        ) -> Optional[str]:
     """多线程分片下载（类似 FDM 的多连接加速）。
 
     通过 HTTP Range 把文件切成多段并行下载再合并，提升带宽利用率。
-    若服务器不支持 Range / 分片失败 / 连接被卡，返回 None 交由兜底方案处理。
-    read_timeout 限制单段最长阻塞时间，避免整体永久卡死。
+    关键修正（修复“进度到 50% 后骤慢”）：
+      * 每个分片必须返回 206 Partial Content，否则视为服务器忽略了 Range，
+        立即整体中止并回退单线程（避免把整文件当成某个分片重复下载）。
+      * 每个分片按自身长度限量读取，绝不读到 EOF——即使服务器误返回整文件
+        也不会在尾部多传数倍数据。
+      * 分片支持有限次重试，平滑瞬时连接抖动。
+    任意分片失败/被取消都返回 None 交由兜底方案处理。
     """
     try:
         ctx = _make_ssl_context()
@@ -134,43 +140,58 @@ def _download_parallel(dl_url: str,
             f.truncate(total)
 
         ranges = _split_ranges(total, parts)
-        errors = []
         state = {'downloaded': 0}
         lock = threading.Lock()
+        results = [None] * len(ranges)
 
-        def worker(rng):
-            if cancel_check and cancel_check():
-                return
+        BUF = 256 * 1024
+
+        def worker(idx, rng):
             start, end = rng
-            try:
-                req = urllib.request.Request(dl_url)
-                req.add_header('User-Agent', 'PalModManager/1.0')
-                req.add_header('Range', f'bytes={start}-{end}')
-                BUF = 256 * 1024
-                with urllib.request.urlopen(req, timeout=read_timeout, context=ctx) as resp:
-                    with open(out_path, 'r+b') as f:
-                        f.seek(start)
-                        while True:
-                            if cancel_check and cancel_check():
-                                return
-                            chunk = resp.read(BUF)
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                            with lock:
-                                state['downloaded'] += len(chunk)
-                                if progress:
-                                    progress(state['downloaded'], total)
-            except Exception:
-                errors.append(True)
+            need = end - start + 1
+            for attempt in range(retries + 1):
+                if cancel_check and cancel_check():
+                    results[idx] = 'cancel'
+                    return
+                try:
+                    req = urllib.request.Request(dl_url)
+                    req.add_header('User-Agent', 'PalModManager/1.0')
+                    req.add_header('Range', f'bytes={start}-{end}')
+                    with urllib.request.urlopen(req, timeout=read_timeout, context=ctx) as resp:
+                        # 服务器必须真正支持分片，否则整段下载会撑爆尾部进度
+                        if resp.status != 206:
+                            results[idx] = 'nopartial'
+                            return
+                        remaining = need
+                        with open(out_path, 'r+b') as f:
+                            f.seek(start)
+                            while remaining > 0:
+                                if cancel_check and cancel_check():
+                                    results[idx] = 'cancel'
+                                    return
+                                chunk = resp.read(min(BUF, remaining))
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                                remaining -= len(chunk)
+                                with lock:
+                                    state['downloaded'] += len(chunk)
+                                    if progress:
+                                        progress(state['downloaded'], total)
+                    break  # 本分片成功
+                except Exception:
+                    if attempt >= retries:
+                        results[idx] = 'error'
+                        return
+                    time.sleep(0.5)
 
-        threads = [threading.Thread(target=worker, args=(r,)) for r in ranges]
+        threads = [threading.Thread(target=worker, args=(i, r)) for i, r in enumerate(ranges)]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
 
-        if errors or (cancel_check and cancel_check()):
+        if any(r in ('error', 'nopartial', 'cancel') for r in results) or (cancel_check and cancel_check()):
             try:
                 os.remove(out_path)
             except OSError:

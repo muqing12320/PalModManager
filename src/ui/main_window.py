@@ -118,6 +118,8 @@ class MainWindow(QMainWindow):
         self.apply_theme()
         self._load_game_path()
         self._load_server_path()
+        # 启动后自动检查更新（静默：只更新工具栏状态标签，不弹窗）
+        QTimer.singleShot(2000, lambda: self._check_update(silent=True))
     
     def _init_window(self):
         """Initialize window properties."""
@@ -324,6 +326,21 @@ class MainWindow(QMainWindow):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         toolbar.addWidget(spacer)
+        
+        # 检查更新按钮 + 状态标签（启动自动检查，不弹窗，仅此处显示状态）
+        update_btn = QPushButton("检查更新")
+        update_btn.setObjectName("checkUpdateBtn")
+        update_btn.setToolTip("点击手动检查更新")
+        update_btn.clicked.connect(self._check_update)
+        update_btn.setStyleSheet(
+            "QPushButton { background:#21262d; color:#c9d1d9; border:1px solid #30363d;"
+            " border-radius:6px; padding:6px 14px; font-size:12px; font-weight:600; }"
+            " QPushButton:hover { background:#30363d; }")
+        toolbar.addWidget(update_btn)
+        
+        self.update_status_lbl = QLabel("")
+        self.update_status_lbl.setObjectName("updateStatusLabel")
+        toolbar.addWidget(self.update_status_lbl)
         
         # Mode indicator
         self.mode_label = QLabel("客户端")
@@ -1396,26 +1413,54 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.information(self, "提示", "未找到UE4SS日志。")
     
+    def _set_update_status(self, text: str, level: str = 'ok'):
+        """更新工具栏「检查更新」按钮旁的状态标签。
+
+        level: ok(绿,已是最新) / update(黄,有可用更新) / error(红,失败) / loading(蓝,检查中)
+        """
+        if not hasattr(self, 'update_status_lbl'):
+            return
+        colors = {
+            'ok': '#3fb950',
+            'update': '#d29922',
+            'error': '#f85149',
+            'loading': '#58a6ff',
+        }
+        color = colors.get(level, '#8b949e')
+        self.update_status_lbl.setText(text)
+        self.update_status_lbl.setStyleSheet(
+            f"color: {color}; padding: 0 8px; font-size: 11px; font-weight: 600;")
+
     def _check_update(self, silent: bool = False):
         """Check for updates; the actual download runs in a worker thread
-        so the UI stays responsive."""
+        so the UI stays responsive.
+
+        When silent=True (启动自动检查) no dialog is shown — only the toolbar
+        status label is updated with "已是最新版本" / "有可用版本: x".
+        """
         self.status_bar.showMessage("正在检查更新...")
+        self._set_update_status("检查更新中…", "loading")
         try:
             from ..utils.updater import check_for_update, apply_update, CURRENT_VERSION, UPDATE_URL
         except Exception as e:
             self.status_bar.showMessage(f"加载失败: {e}")
-            QMessageBox.warning(self, "错误", f"加载更新模块失败:\n{e}")
+            self._set_update_status("更新模块加载失败", "error")
+            if not silent:
+                QMessageBox.warning(self, "错误", f"加载更新模块失败:\n{e}")
             return
         
         try:
             info, err = check_for_update(UPDATE_URL)
         except Exception as e:
             self.status_bar.showMessage(f"检查失败: {e}")
-            QMessageBox.warning(self, "检查更新", f"检查更新时出错:\n{e}")
+            self._set_update_status("更新检查失败", "error")
+            if not silent:
+                QMessageBox.warning(self, "检查更新", f"检查更新时出错:\n{e}")
             return
         
         if info is None:
             self.status_bar.showMessage("连接失败")
+            self._set_update_status("更新检查失败", "error")
             if not silent:
                 QMessageBox.warning(self, "检查更新",
                     f"无法连接到更新服务器。\n{err}\n\n"
@@ -1424,12 +1469,18 @@ class MainWindow(QMainWindow):
         
         if not info:
             self.status_bar.showMessage(f"已是最新版本 ({CURRENT_VERSION})")
+            self._set_update_status(f"已是最新版本 ({CURRENT_VERSION})", "ok")
             if not silent:
                 QMessageBox.information(self, "检查更新",
                     f"已是最新版本 ({CURRENT_VERSION})。")
             return
         
         ver = info.get('version', CURRENT_VERSION)
+        # 发现新版本：静默模式只更新标签，不弹窗（用户可点击按钮升级）
+        self.status_bar.showMessage(f"发现新版本 {ver}")
+        self._set_update_status(f"有可用版本: {ver}", "update")
+        if silent:
+            return
         notes = info.get('notes', '')
         reply = QMessageBox.question(
             self, "发现新版本",
