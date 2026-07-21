@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (
     QMessageBox, QFileDialog, QApplication, QLabel, QPushButton,
     QStyle, QSizePolicy, QFrame,
 )
-from PyQt5.QtCore import Qt, QTimer, QSize, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, QSize, QThread, pyqtSignal
 from PyQt5.QtGui import QIcon, QFont
 
 from ..core.manager import ModManager
@@ -34,6 +34,72 @@ from .mod_detail import ModDetailPanel
 from .settings_page import SettingsPage
 from .profile_dialog import ProfileDialog
 from .styles import create_stylesheet, get_toolbar_button_style, is_dark_theme
+
+
+def _fmt_time(seconds: float) -> str:
+    """把秒数格式化为 人类可读 的剩余/已用时间。"""
+    if seconds is None or seconds < 0:
+        return "-"
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds} 秒"
+    m, s = divmod(seconds, 60)
+    if m < 60:
+        return f"{m} 分 {s} 秒"
+    h, m = divmod(m, 60)
+    return f"{h} 时 {m} 分"
+
+
+class UpdateDownloader(QThread):
+    """在独立线程中下载更新，通过信号回报进度，避免卡住 UI。"""
+
+    progress_changed = pyqtSignal(int, int, str)  # done, total, method
+    download_finished = pyqtSignal(str)           # 临时文件路径
+    download_failed = pyqtSignal(str)             # 错误信息
+    canceled = pyqtSignal()                       # 用户取消
+
+    def __init__(self, url: str, mirror: str = ''):
+        super().__init__()
+        self.url = url
+        self.mirror = mirror
+        self._cancelled = False
+
+    def run(self):
+        try:
+            from ..utils.updater import download_update
+
+            def on_progress(done, total):
+                if self._cancelled:
+                    return
+                self.progress_changed.emit(done, total, "")
+
+            # 让下载器在切换下载方式时通知 UI
+            def on_method(method):
+                if not self._cancelled:
+                    self.progress_changed.emit(0, 0, method)
+
+            saved = download_update(
+                self.url,
+                progress=on_progress,
+                mirror=self.mirror,
+                cancel_check=lambda: self._cancelled,
+                method_cb=on_method,
+            )
+            if self._cancelled:
+                return
+            if saved:
+                self.download_finished.emit(saved)
+            else:
+                self.download_failed.emit(
+                    "下载失败：所有下载源均不可用或网络异常，请稍后重试。")
+        except Exception as e:
+            if not self._cancelled:
+                self.download_failed.emit(f"下载出错：{e}")
+
+    def cancel(self):
+        if not self._cancelled:
+            self._cancelled = True
+            self.canceled.emit()
 
 
 class MainWindow(QMainWindow):
@@ -1242,10 +1308,11 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "未找到UE4SS日志。")
     
     def _check_update(self, silent: bool = False):
-        """Check for updates with download progress bar."""
+        """Check for updates; the actual download runs in a worker thread
+        so the UI stays responsive."""
         self.status_bar.showMessage("正在检查更新...")
         try:
-            from ..utils.updater import check_for_update, download_update, apply_update, CURRENT_VERSION, UPDATE_URL
+            from ..utils.updater import check_for_update, apply_update, CURRENT_VERSION, UPDATE_URL
         except Exception as e:
             self.status_bar.showMessage(f"加载失败: {e}")
             QMessageBox.warning(self, "错误", f"加载更新模块失败:\n{e}")
@@ -1268,6 +1335,9 @@ class MainWindow(QMainWindow):
         
         if not info:
             self.status_bar.showMessage(f"已是最新版本 ({CURRENT_VERSION})")
+            if not silent:
+                QMessageBox.information(self, "检查更新",
+                    f"已是最新版本 ({CURRENT_VERSION})。")
             return
         
         ver = info.get('version', CURRENT_VERSION)
@@ -1292,36 +1362,128 @@ class MainWindow(QMainWindow):
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
         progress.show()
-        QApplication.processEvents()
         
-        def on_progress(done, total):
-            if total > 0:
-                progress.setValue(int(done * 100 / total))
-                progress.setLabelText(
-                    f"下载中... {done/1048576:.1f} / {total/1048576:.1f} MB")
-            QApplication.processEvents()
-        
-        try:
-            saved = download_update(url, progress=on_progress, mirror=info.get('_mirror', ''))
-        except Exception as e:
-            progress.close()
-            QMessageBox.critical(self, "错误", f"下载失败:\n{e}")
-            return
-        
-        progress.close()
-        if not saved:
-            QMessageBox.critical(self, "错误", "下载失败。")
-            return
-        
-        if apply_update(saved):
-            # Force exit immediately - wscript will replace and restart
-            self.status_bar.showMessage("更新已就绪，正在关闭...")
-            self.status_bar.repaint()
-            self.close()
-            QApplication.quit()
-            os._exit(0)
-        else:
-            QMessageBox.critical(self, "错误", "无法应用更新。")
+        from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout,
+                                      QLabel, QProgressBar, QPushButton)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("下载更新")
+        dlg.setFixedSize(460, 260)
+        dlg.setWindowModality(Qt.WindowModal)
+
+        layout = QVBoxLayout(dlg)
+        layout.setSpacing(10)
+
+        title_lbl = QLabel(f"正在下载新版本 {ver}")
+        title_lbl.setStyleSheet("font-size: 13px; font-weight: bold;")
+        layout.addWidget(title_lbl)
+
+        bar = QProgressBar(dlg)
+        bar.setRange(0, 100)
+        bar.setValue(0)
+        bar.setTextVisible(True)
+        bar.setMinimumHeight(22)
+        layout.addWidget(bar)
+
+        # 两列信息网格
+        grid = QGridLayout()
+        grid.setSpacing(4)
+        lbl_size = QLabel("大小：")
+        lbl_speed = QLabel("速度：")
+        lbl_remain = QLabel("剩余：")
+        lbl_elapsed = QLabel("已用：")
+        lbl_method = QLabel("方式：")
+        val_size = QLabel("-")
+        val_speed = QLabel("-")
+        val_remain = QLabel("-")
+        val_elapsed = QLabel("0 秒")
+        val_method = QLabel("准备中…")
+        for lbl in (lbl_size, lbl_speed, lbl_remain, lbl_elapsed, lbl_method):
+            lbl.setStyleSheet("color: #888;")
+        grid.addWidget(lbl_size, 0, 0)
+        grid.addWidget(val_size, 0, 1)
+        grid.addWidget(lbl_method, 0, 2)
+        grid.addWidget(val_method, 0, 3)
+        grid.addWidget(lbl_speed, 1, 0)
+        grid.addWidget(val_speed, 1, 1)
+        grid.addWidget(lbl_elapsed, 1, 2)
+        grid.addWidget(val_elapsed, 1, 3)
+        grid.addWidget(lbl_remain, 2, 0)
+        grid.addWidget(val_remain, 2, 1)
+        layout.addLayout(grid)
+
+        status_lbl = QLabel("正在连接更新服务器…")
+        status_lbl.setStyleSheet("color: #0969da;")
+        layout.addWidget(status_lbl)
+
+        cancel_btn = QPushButton("取消")
+        cancel_btn.setFixedWidth(100)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+        dlg.show()
+
+        # ---- 进度与速度计算 ----
+        start_ts = time.time()
+        last_ts = [start_ts]
+        last_done = [0]
+
+        def on_progress_changed(done, total, method=""):
+            now = time.time()
+            dt = now - last_ts[0]
+            if dt >= 0.4 or method:
+                dd = done - last_done[0]
+                speed = dd / dt if dt > 0 else 0
+                last_ts[0] = now
+                last_done[0] = done
+
+                pct = int(done * 100 / total) if total > 0 else 0
+                bar.setValue(min(100, pct))
+                val_size.setText(
+                    f"{done/1048576:.1f} / {total/1048576:.1f} MB")
+                if speed > 0:
+                    val_speed.setText(f"{speed/1048576:.2f} MB/s")
+                else:
+                    val_speed.setText("-")
+                if speed > 0 and total > done:
+                    rem = (total - done) / speed
+                    val_remain.setText(_fmt_time(rem))
+                else:
+                    val_remain.setText("-")
+                val_elapsed.setText(_fmt_time(now - start_ts))
+                if method:
+                    val_method.setText(method)
+                status_lbl.setText("正在下载更新文件…")
+
+        def on_finished(saved):
+            dlg.close()
+            if apply_update(saved):
+                self.status_bar.showMessage("更新已就绪，正在关闭...")
+                self.status_bar.repaint()
+                self.close()
+                QApplication.quit()
+                os._exit(0)
+            else:
+                QMessageBox.critical(self, "错误", "无法应用更新。")
+
+        def on_failed(msg):
+            dlg.close()
+            QMessageBox.critical(self, "错误", msg)
+
+        def do_cancel():
+            dlg.close()
+
+        cancel_btn.clicked.connect(do_cancel)
+
+        # 下载在独立线程中进行，UI 全程可响应、可取消
+        self._update_worker = UpdateDownloader(url, mirror=info.get('_mirror', ''))
+        self._update_worker.progress_changed.connect(on_progress_changed)
+        self._update_worker.download_finished.connect(on_finished)
+        self._update_worker.download_failed.connect(on_failed)
+        self._update_worker.canceled.connect(do_cancel)
+        cancel_btn.clicked.connect(self._update_worker.cancel)
+        self._update_worker.start()
 
     def _show_about(self):
         """Show the about dialog."""

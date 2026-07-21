@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional, Callable
 
 
-CURRENT_VERSION = "1.1.14"
+CURRENT_VERSION = "1.1.15"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 
@@ -69,42 +69,53 @@ def _split_ranges(total: int, parts: int):
 
 
 def _download_simple(dl_url: str,
-                     progress: Optional[Callable[[int, int], None]] = None
+                     progress: Optional[Callable[[int, int], None]] = None,
+                     cancel_check: Optional[Callable[[], bool]] = None,
+                     timeout: int = 30
                      ) -> Optional[str]:
     """单线程下载（兜底方案）。返回临时文件路径或 None。"""
     BUFFER = 512 * 1024
+    tmp = None
     try:
         req = urllib.request.Request(dl_url)
         req.add_header('User-Agent', 'PalModManager/1.0')
         ctx = _make_ssl_context()
-        with urllib.request.urlopen(req, timeout=300, context=ctx) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             total = int(resp.headers.get('Content-Length', 0))
             downloaded = 0
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.exe')
-            try:
-                while True:
-                    chunk = resp.read(BUFFER)
-                    if not chunk:
-                        break
-                    tmp.write(chunk)
-                    downloaded += len(chunk)
-                    if progress:
-                        progress(downloaded, total or downloaded)
-            finally:
-                tmp.close()
+            while True:
+                if cancel_check and cancel_check():
+                    raise InterruptedError('cancelled')
+                chunk = resp.read(BUFFER)
+                if not chunk:
+                    break
+                tmp.write(chunk)
+                downloaded += len(chunk)
+                if progress:
+                    progress(downloaded, total or downloaded)
+            tmp.close()
             return tmp.name
     except Exception:
+        if tmp is not None and os.path.exists(tmp.name):
+            try:
+                os.remove(tmp.name)
+            except OSError:
+                pass
         return None
 
 
 def _download_parallel(dl_url: str,
                        progress: Optional[Callable[[int, int], None]] = None,
-                       parts: int = 8
+                       cancel_check: Optional[Callable[[], bool]] = None,
+                       parts: int = 4,
+                       read_timeout: int = 20
                        ) -> Optional[str]:
     """多线程分片下载（类似 FDM 的多连接加速）。
 
     通过 HTTP Range 把文件切成多段并行下载再合并，提升带宽利用率。
-    若服务器不支持 Range / 分片失败，返回 None 交由兜底方案处理。
+    若服务器不支持 Range / 分片失败 / 连接被卡，返回 None 交由兜底方案处理。
+    read_timeout 限制单段最长阻塞时间，避免整体永久卡死。
     """
     try:
         ctx = _make_ssl_context()
@@ -130,13 +141,17 @@ def _download_parallel(dl_url: str,
         lock = threading.Lock()
 
         def worker(rng):
+            if cancel_check and cancel_check():
+                return
             start, end = rng
             try:
                 req = urllib.request.Request(dl_url)
                 req.add_header('User-Agent', 'PalModManager/1.0')
                 req.add_header('Range', f'bytes={start}-{end}')
-                with urllib.request.urlopen(req, timeout=300, context=ctx) as resp:
+                with urllib.request.urlopen(req, timeout=read_timeout, context=ctx) as resp:
                     data = resp.read()
+                if cancel_check and cancel_check():
+                    return
                 with open(out_path, 'r+b') as f:
                     f.seek(start)
                     f.write(data)
@@ -144,8 +159,8 @@ def _download_parallel(dl_url: str,
                     state['downloaded'] += len(data)
                     if progress:
                         progress(state['downloaded'], total)
-            except Exception as e:
-                errors.append(e)
+            except Exception:
+                errors.append(True)
 
         threads = [threading.Thread(target=worker, args=(r,)) for r in ranges]
         for t in threads:
@@ -153,7 +168,7 @@ def _download_parallel(dl_url: str,
         for t in threads:
             t.join()
 
-        if errors:
+        if errors or (cancel_check and cancel_check()):
             try:
                 os.remove(out_path)
             except OSError:
@@ -167,25 +182,41 @@ def _download_parallel(dl_url: str,
 def download_update(url: str,
                     progress: Optional[Callable[[int, int], None]] = None,
                     mirror: str = '',
+                    cancel_check: Optional[Callable[[], bool]] = None,
+                    method_cb: Optional[Callable[[str], None]] = None,
                     ) -> Optional[str]:
     """Download the update EXE.
 
-    优先用多线程分片下载（多连接加速），失败则退回单线程；
-    主地址不行再试镜像地址。*progress(downloaded, total)* 报告进度。
+    优先尝试多线程分片下载（主地址），失败/卡死则尽快退回单线程
+    （主地址 -> 镜像），保证进度能持续推进、不会永久卡住。
+    *progress(downloaded, total)* 报告进度；*cancel_check()* 返回 True 时中止；
+    *method_cb(text)* 在切换下载方式时回调，用于 UI 显示当前阶段/方式。
     返回临时文件路径，或 None。
     """
+    def _say(m):
+        if method_cb:
+            try:
+                method_cb(m)
+            except Exception:
+                pass
+
+    # 1) 并行（主地址），卡死会在 read_timeout 内暴露
+    _say("方式：多线程分片加速（主服务器）")
+    r = _download_parallel(url, progress, cancel_check)
+    if r:
+        return r
+    # 2) 退回单线程（主地址 -> 镜像）
+    _say("方式：单线程下载（更稳定）")
+    return _download_update_fallback(url, mirror, progress, cancel_check)
+
+
+def _download_update_fallback(url, mirror, progress, cancel_check):
     for dl_url in (url, mirror):
         if not dl_url:
             continue
-        result = _download_parallel(dl_url, progress)
-        if result:
-            return result
-    for dl_url in (url, mirror):
-        if not dl_url:
-            continue
-        result = _download_simple(dl_url, progress)
-        if result:
-            return result
+        r = _download_simple(dl_url, progress, cancel_check)
+        if r:
+            return r
     return None
 
 
