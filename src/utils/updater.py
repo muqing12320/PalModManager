@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional, Callable
 
 
-CURRENT_VERSION = "1.1.12"
+CURRENT_VERSION = "1.1.13"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 
@@ -152,7 +152,8 @@ def apply_update(downloaded_path: str) -> bool:
         except OSError:
             pass
         # 拉起新版本去完成替换（.detached，父进程退出也存活）
-        _launch_detached(new_exe, args=[APPLY_UPDATE_ARG])
+        # 把原始 exe 路径作为参数传入，以便更新后保留用户自定义的文件名
+        _launch_detached(new_exe, args=[APPLY_UPDATE_ARG, current_exe])
         return True
     except Exception:
         return False
@@ -168,11 +169,22 @@ def finish_pending_update() -> bool:
     try:
         current_exe = sys.executable
         exe_dir = os.path.dirname(current_exe)
-        # PalModManager_new.exe -> PalModManager.exe
-        if current_exe.lower().endswith("_new.exe"):
-            target_exe = current_exe[: -len("_new.exe")] + ".exe"
-        else:
-            target_exe = os.path.join(exe_dir, "PalModManager.exe")
+        # 原始（被替换的）exe 路径由启动参数传入，以保留用户自定义文件名
+        target_exe = None
+        try:
+            idx = sys.argv.index(APPLY_UPDATE_ARG)
+            if idx + 1 < len(sys.argv):
+                cand = sys.argv[idx + 1]
+                if cand.lower().endswith(".exe"):
+                    target_exe = cand
+        except Exception:
+            target_exe = None
+        if not target_exe:
+            # 兜底推导（兼容旧逻辑 / 未传路径的情况）
+            if current_exe.lower().endswith("_new.exe"):
+                target_exe = current_exe[: -len("_new.exe")] + ".exe"
+            else:
+                target_exe = os.path.join(exe_dir, "PalModManager.exe")
         backup_exe = target_exe + ".bak"
 
         # 等待旧程序退出并释放文件句柄
@@ -220,8 +232,14 @@ def cleanup_update_leftovers():
     try:
         current_exe = sys.executable
         exe_dir = os.path.dirname(current_exe)
-        for name in ("PalModManager_new.exe", "PalModManager.exe.bak"):
-            p = os.path.join(exe_dir, name)
+        # 同时兼容：用户自定义名（<当前exe>.bak）、固定名（PalModManager.exe.bak）
+        # 以及暂存文件 PalModManager_new.exe
+        candidates = [
+            os.path.join(exe_dir, "PalModManager_new.exe"),
+            current_exe + ".bak",
+            os.path.join(exe_dir, "PalModManager.exe.bak"),
+        ]
+        for p in candidates:
             if os.path.exists(p):
                 try:
                     os.remove(p)
