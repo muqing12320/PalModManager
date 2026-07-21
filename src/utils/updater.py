@@ -17,7 +17,7 @@ import threading
 from typing import Optional, Callable
 
 
-CURRENT_VERSION = "1.2.2"
+CURRENT_VERSION = "1.2.3"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 

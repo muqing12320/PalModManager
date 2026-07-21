@@ -157,6 +157,9 @@ class MainWindow(QMainWindow):
         # Menu bar
         self._create_menu_bar()
         
+        # 顶部条（检查更新按钮 + 状态，独占最上方一行，不被启动游戏行挤压）
+        self._create_top_bar()
+        
         # Toolbar
         self._create_toolbar()
         
@@ -247,17 +250,38 @@ class MainWindow(QMainWindow):
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
         
-        # "检查更新" button next to 帮助 (top-level action on menubar)
-        update_action = QAction("检查更新", self)
-        update_action.triggered.connect(self._check_update)
-        menubar.addAction(update_action)
+    def _create_top_bar(self):
+        """顶部条（最上方独立一行，宽度自适应内容）：左侧放「检查更新」按钮与状态标签。
+        启动自动检查不弹窗，仅在此处显示状态；不与「启动游戏」同一行。"""
+        top_bar = QWidget()
+        top_bar.setObjectName("topBar")
+        top_bar.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        top_layout = QHBoxLayout(top_bar)
+        top_layout.setContentsMargins(12, 6, 12, 6)
+        top_layout.setSpacing(10)
+
+        update_btn = QPushButton("检查更新")
+        update_btn.setObjectName("checkUpdateBtn")
+        update_btn.setToolTip("点击手动检查更新")
+        update_btn.clicked.connect(self._check_update)
+        update_btn.setStyleSheet(
+            "QPushButton { background:#21262d; color:#c9d1d9; border:1px solid #30363d;"
+            " border-radius:6px; padding:4px 14px; font-size:12px; font-weight:600; }"
+            " QPushButton:hover { background:#30363d; }")
+        top_layout.addWidget(update_btn)
+
+        self.update_status_lbl = QLabel("")
+        self.update_status_lbl.setObjectName("updateStatusLabel")
+        top_layout.addWidget(self.update_status_lbl)
+
+        self.centralWidget().layout().addWidget(top_bar)
     
     def _create_toolbar(self):
         """Create the toolbar."""
         toolbar = QToolBar("主工具栏")
         toolbar.setMovable(False)
         toolbar.setIconSize(QSize(20, 20))
-        self.addToolBar(toolbar)
+        self.centralWidget().layout().addWidget(toolbar)
         
         # 客户端/服务器切换
         self.mode_switch_btn = QPushButton("客户端")
@@ -326,21 +350,6 @@ class MainWindow(QMainWindow):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         toolbar.addWidget(spacer)
-        
-        # 检查更新按钮 + 状态标签（启动自动检查，不弹窗，仅此处显示状态）
-        update_btn = QPushButton("检查更新")
-        update_btn.setObjectName("checkUpdateBtn")
-        update_btn.setToolTip("点击手动检查更新")
-        update_btn.clicked.connect(self._check_update)
-        update_btn.setStyleSheet(
-            "QPushButton { background:#21262d; color:#c9d1d9; border:1px solid #30363d;"
-            " border-radius:6px; padding:6px 14px; font-size:12px; font-weight:600; }"
-            " QPushButton:hover { background:#30363d; }")
-        toolbar.addWidget(update_btn)
-        
-        self.update_status_lbl = QLabel("")
-        self.update_status_lbl.setObjectName("updateStatusLabel")
-        toolbar.addWidget(self.update_status_lbl)
         
         # Mode indicator
         self.mode_label = QLabel("客户端")
