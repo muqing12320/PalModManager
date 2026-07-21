@@ -6,6 +6,7 @@ import re
 import hashlib
 import platform
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional, List, Tuple
 from datetime import datetime
@@ -428,8 +429,11 @@ def launch_game(game_path: str, args: List[str] = None) -> Tuple[bool, str]:
         cmd = [str(exe)]
         if args:
             cmd.extend(args)
-        
-        subprocess.Popen(cmd, cwd=str(p))
+
+        # 工作目录必须是 exe 所在目录（根目录 Palworld.exe 或用
+        # Pal/Binaries/Win64/Palworld-Win64-Shipping.exe），
+        # 否则缺 DLL 导致游戏闪退。
+        subprocess.Popen(cmd, cwd=str(exe.parent))
         return True, "游戏已启动"
     except Exception as e:
         return False, f"启动失败: {str(e)}"
@@ -458,11 +462,19 @@ def launch_palserver(server_path: str, args: List[str] = None) -> Tuple[bool, st
         return False, "未找到服务器可执行文件"
     
     try:
-        cmd = [str(exe)]
-        if args:
-            cmd.extend(args)
-        
-        subprocess.Popen(cmd, cwd=str(p))
+        if sys.platform == "win32":
+            # 通过 cmd /c start 在新控制台中启动，彻底脱离 PyInstaller
+            # 父进程的 GUI 环境（无 stdin），避免服务器/游戏启动后闪退。
+            # start 第一个 "" 是窗口标题参数（不能省略）。
+            subprocess.Popen(
+                ["cmd", "/c", "start", "", str(exe)] + (args if args else []),
+                cwd=str(exe.parent),
+            )
+        else:
+            cmd = [str(exe)]
+            if args:
+                cmd.extend(args)
+            subprocess.Popen(cmd, cwd=str(exe.parent))
         return True, "服务器已启动"
     except Exception as e:
         return False, f"启动失败: {str(e)}"

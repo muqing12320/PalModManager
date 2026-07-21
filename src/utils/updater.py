@@ -22,7 +22,7 @@ import urllib3
 # 更新检查/下载复用与 Mod 下载相同的 urllib + CERT_NONE 通道，
 # 可彻底绕过代理/自签名证书导致的 CERTIFICATE_VERIFY_FAILED。
 from .network import fetch_json, SafeDownloader, make_ssl_context
-# 关闭“未校验证书”的安全告警（在需要降级不校验时才会触发）
+# 关闭"未校验证书"的安全告警（在需要降级不校验时才会触发）
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
@@ -80,7 +80,7 @@ def _ca_bundle() -> str:
         return ''
 
 
-CURRENT_VERSION = "1.2.6"
+CURRENT_VERSION = "1.2.8"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 
@@ -96,7 +96,7 @@ def _build_session(retries: int = 6, verify: Optional[str] = None) -> requests.S
     if verify is None:
         verify = False if _NO_VERIFY else _ca_bundle()
     # 证书包路径为空（如 certifi 缺失）时，明确关闭校验，避免把空串当路径
-    # 触发 “找不到证书文件” 这类非 SSL 错误而错过自动降级。
+    # 触发 "找不到证书文件" 这类非 SSL 错误而错过自动降级。
     if not verify:
         verify = False
     s = requests.Session()
@@ -629,7 +629,7 @@ def apply_update(downloaded_path: str) -> bool:
     做法：将下载好的新 exe 复制为同目录下的 PalModManager_new.exe，
     由当前程序用 subprocess 直接拉起它（带 --apply-update 参数），
     随后当前程序立即退出。新进程负责等待旧程序释放后替换文件并启动最终程序。
-    这样彻底避免“从 .bat/VBS 里启动新 exe 失败”的问题。
+    这样彻底避免"从 .bat/VBS 里启动新 exe 失败"的问题。
     """
     current_exe = sys.executable
     if not current_exe.lower().endswith(".exe"):
@@ -638,7 +638,7 @@ def apply_update(downloaded_path: str) -> bool:
         return False
 
     # 校验下载到的确实是 Windows 可执行文件（DOS 头 'MZ'），
-    # 避免把 404 页面等错误内容当 exe 启动导致“闪退”。
+    # 避免把 404 页面等错误内容当 exe 启动导致"闪退"。
     try:
         with open(downloaded_path, "rb") as fh:
             head = fh.read(2)
@@ -691,18 +691,19 @@ def finish_pending_update() -> bool:
         except Exception:
             target_exe = None
         if not target_exe:
-            # 兜底推导（兼容旧逻辑 / 未传路径的情况）。
-            # 注意：此时 current_exe 位于 temp 子目录，不能从它反推原目录，
-            # 只能回退到标准名并存于 temp（边缘情况，正常流程总会传入路径）。
-            target_exe = os.path.join(_update_temp_dir(), "PalModManager.exe")
-        # 备份放 temp（与暂存新 exe 同目录），不污染用户原目录
-        backup_exe = os.path.join(os.path.dirname(current_exe),
-                                  os.path.basename(target_exe) + ".bak")
-
+            # 兜底（极端情况：未传入原路径）。直接以新版本运行，保证可用，
+            # 且绝不向用户目录写入任何"固定文件名"的副本（避免产生第二个应用）。
+            try:
+                _launch_detached(current_exe)
+            except Exception:
+                pass
+            os._exit(0)
         # 等待旧程序退出并释放文件句柄
         time.sleep(3)
 
-        # 先把旧 exe 改名备份（Windows 上运行中的 exe 可被改名）
+        # 删除旧版 exe（Windows 上改名更安全），备份放 temp
+        backup_exe = os.path.join(os.path.dirname(current_exe),
+                                  os.path.basename(target_exe) + ".bak")
         for _ in range(20):
             try:
                 if os.path.exists(target_exe):
@@ -716,7 +717,7 @@ def finish_pending_update() -> bool:
             except OSError:
                 time.sleep(0.5)
 
-        # 把新 exe 复制为最终文件名
+        # 把新 exe 复制为最终文件名，自动沿用用户在 Windows 里自定义的名字
         for _ in range(20):
             try:
                 shutil.copyfile(current_exe, target_exe)
@@ -737,6 +738,239 @@ def finish_pending_update() -> bool:
             pass
         os._exit(0)
     return True
+
+
+# 用于识别"同属本应用"的可执行文件
+_APP_PRODUCT_NAME = "PalModManager"
+
+
+def _ver_tuple(v) -> Optional[tuple]:
+    """把版本号归一化为 4 元组 (maj, min, patch, build)；无法解析返回 None。"""
+    if not v:
+        return None
+    try:
+        if isinstance(v, (tuple, list)):
+            parts = [int(x) for x in v[:4]]
+        else:
+            parts = [int(x) for x in str(v).split(".") if x.strip().isdigit()]
+        while len(parts) < 4:
+            parts.append(0)
+        return tuple(parts[:4])
+    except Exception:
+        return None
+
+
+def _read_exe_version(path: str):
+    """读取 exe 版本资源里的 (product_name, file_version_tuple)。
+
+    读不到（如老版本安装包未内嵌版本资源）返回 (None, None)。
+    仅用于"同应用 + 更旧"的精确判定，缺失时由图标识别兜底。
+    """
+    try:
+        import ctypes
+        # 版本资源 API 位于 version.dll（不是 kernel32）
+        verdll = getattr(ctypes.windll, "version", None) or ctypes.CDLL("version")
+        size = verdll.GetFileVersionInfoSizeW(path, None)
+        if not size:
+            return (None, None)
+        buf = ctypes.create_string_buffer(size)
+        if not verdll.GetFileVersionInfoW(path, 0, size, buf):
+            return (None, None)
+
+        class _LCP(ctypes.Structure):
+            _fields_ = [("wLanguage", ctypes.c_uint16),
+                        ("wCodePage", ctypes.c_uint16)]
+
+        lp = ctypes.c_void_p()
+        uLen = ctypes.c_uint()
+        if not verdll.VerQueryValueW(buf, "\\VarFileInfo\\Translation",
+                                     ctypes.byref(lp), ctypes.byref(uLen)):
+            return (None, None)
+        cp = ctypes.cast(lp, ctypes.POINTER(_LCP))[0]
+        lang = "%04x%04x" % (cp.wLanguage, cp.wCodePage)
+        product_name = None
+        if verdll.VerQueryValueW(buf,
+                                 "\\StringFileInfo\\%s\\ProductName" % lang,
+                                 ctypes.byref(lp), ctypes.byref(uLen)):
+            product_name = ctypes.wstring_at(lp)
+        file_version = None
+        ffi = ctypes.c_void_p()
+        ffi_len = ctypes.c_uint()
+        if verdll.VerQueryValueW(buf, "\\", ctypes.byref(ffi),
+                                 ctypes.byref(ffi_len)):
+            arr = ctypes.cast(ffi, ctypes.POINTER(ctypes.c_uint32 * 5))[0]
+            file_version = (arr[2] >> 16, arr[2] & 0xffff,
+                            arr[3] >> 16, arr[3] & 0xffff)
+        return (product_name, file_version)
+    except Exception:
+        return (None, None)
+
+
+def _read_icon_signature(path: str):
+    """计算 exe 内嵌图标的规范化签名（字节）。
+
+    图标以 PE 资源（RT_GROUP_ICON / RT_ICON）形式存放，不会被 PyInstaller
+    压缩，因此所有版本（含老版本）都可读取并互相比对：相同图标 == 同一应用。
+    读取失败返回 None（此时由版本资源判定兜底）。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.windll.kernel32
+        LOAD_LIBRARY_AS_DATAFILE = 0x2
+        hmod = kernel32.LoadLibraryExW(path, None, LOAD_LIBRARY_AS_DATAFILE)
+        if not hmod:
+            return None
+        try:
+            RT_GROUP_ICON = 14
+            RT_ICON = 3
+            collected = {"gi": [], "ic": []}
+
+            def _make_cb(bucket):
+                def _cb(hModule, lpszType, lpszName, lParam):
+                    if (lpszName & 0xFFFF0000) == 0:
+                        collected[bucket].append(lpszName & 0xFFFF)
+                    else:
+                        try:
+                            collected[bucket].append(ctypes.wstring_at(lpszName))
+                        except Exception:
+                            pass
+                    return 1
+                return _cb
+
+            cb_t = ctypes.CFUNCTYPE(ctypes.c_int, wintypes.HMODULE,
+                                    ctypes.c_void_p, ctypes.c_void_p,
+                                    ctypes.c_void_p)
+            kernel32.EnumResourceNamesW(hmod, ctypes.c_void_p(RT_GROUP_ICON),
+                                        cb_t(_make_cb("gi")), 0)
+            kernel32.EnumResourceNamesW(hmod, ctypes.c_void_p(RT_ICON),
+                                        cb_t(_make_cb("ic")), 0)
+
+            def _load(typ, name):
+                hfind = kernel32.FindResourceW(hmod, ctypes.c_void_p(name),
+                                               ctypes.c_void_p(typ))
+                if not hfind:
+                    return None
+                sz = kernel32.SizeofResource(hmod, hfind)
+                hglob = kernel32.LoadResource(hmod, hfind)
+                if not hglob:
+                    return None
+                ptr = kernel32.LockResource(hglob)
+                if not ptr:
+                    return None
+                return ctypes.string_at(ptr, sz)
+
+            parts = []
+            for n in sorted(collected["gi"], key=lambda x: (isinstance(x, str), x)):
+                r = _load(RT_GROUP_ICON, n)
+                if r is not None:
+                    parts.append((str(n), r))
+            for n in sorted(collected["ic"], key=lambda x: (isinstance(x, str), x)):
+                r = _load(RT_ICON, n)
+                if r is not None:
+                    parts.append((str(n), r))
+            if not parts:
+                return None
+            sig = bytearray()
+            for name, buf in parts:
+                sig += (str(name) + ":").encode("utf-8")
+                sig += len(buf).to_bytes(4, "little")
+                sig += buf
+            return bytes(sig)
+        finally:
+            kernel32.FreeLibrary(hmod)
+    except Exception:
+        return None
+
+
+def _is_same_app(path: str, ref_sig, ref_product) -> bool:
+    """判断 path 是否与当前应用为同一程序（用于定位"旧版本"残留）。"""
+    try:
+        if not path.lower().endswith(".exe") or not os.path.isfile(path):
+            return False
+        # 1) 版本资源精确匹配（新版本安装包含 ProductName=PalModManager）
+        product, _ = _read_exe_version(path)
+        if product and product.strip() == _APP_PRODUCT_NAME:
+            return True
+        # 2) 图标签名匹配（跨版本、含老版本均有效）
+        if ref_sig:
+            sig = _read_icon_signature(path)
+            if sig and sig == ref_sig:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _old_version_suffix(path: str) -> str:
+    """计算用于把旧版本 exe 重命名后的后缀：优先版本号 '_v1.2.3'，读不到则时间戳。"""
+    try:
+        _, v = _read_exe_version(path)
+        vt = _ver_tuple(v)
+        if vt:
+            return "_v%d.%d.%d" % (vt[0], vt[1], vt[2])
+    except Exception:
+        pass
+    return "_old_" + time.strftime("%Y%m%d%H%M%S")
+
+
+def _rename_old_siblings(updated_exe: str) -> None:
+    """更新成功后，把同目录里"同应用"的旧版本 exe 重命名为"旧版本名字"保留。
+
+    不删除任何文件：仅对确属本应用、且版本不比刚安装的新 exe 更新的其它 exe
+    做重命名（如 我的管理器_v1.2.4.exe / PalModManager_v1.2.4.exe），
+    既满足用户"保留旧版本"的诉求，又不会让用户看到两个同名应用造成混淆。
+    updated_exe 自身（当前运行所用文件名）保持不变。
+    """
+    try:
+        exe_dir = os.path.dirname(updated_exe)
+        ref_sig = _read_icon_signature(updated_exe)
+        ref_product, new_ver = _read_exe_version(updated_exe)
+        new_ver = _ver_tuple(new_ver)
+        try:
+            target_mtime = os.path.getmtime(updated_exe)
+        except OSError:
+            target_mtime = None
+        for name in os.listdir(exe_dir):
+            sib = os.path.join(exe_dir, name)
+            if sib.lower() == updated_exe.lower():
+                continue
+            if not sib.lower().endswith(".exe"):
+                continue
+            if not _is_same_app(sib, ref_sig, ref_product):
+                continue
+            # 已经是"旧版本名字"（_vX.Y.Z 或 _old_时间戳）的，跳过避免重复处理
+            base = os.path.splitext(name)[0]
+            if base.endswith("_old") or "_v" in base:
+                continue
+            # 是否为"应重命名的旧版本/冗余副本"：同应用且"不比新 exe 更新"
+            is_old = True
+            if new_ver is not None:
+                p2, v2 = _read_exe_version(sib)
+                v2t = _ver_tuple(v2)
+                if p2 and p2.strip() == _APP_PRODUCT_NAME and v2t is not None:
+                    is_old = v2t <= new_ver  # 同版本或旧版本都重命名保留
+            # 兜底：万一读不到版本（老版本无资源），用修改时间保护，绝不处理比新 exe 更新的文件
+            if is_old and target_mtime is not None:
+                try:
+                    if os.path.getmtime(sib) > target_mtime:
+                        is_old = False
+                except OSError:
+                    pass
+            if not is_old:
+                continue
+            # 重命名为"旧版本名字"（保留在原目录，不删除）
+            new_name = os.path.splitext(sib)[0] + _old_version_suffix(sib) + ".exe"
+            if os.path.exists(new_name):
+                new_name = (os.path.splitext(sib)[0] + _old_version_suffix(sib)
+                            + "_" + time.strftime("%H%M%S") + ".exe")
+            try:
+                os.rename(sib, new_name)
+                _dbg("旧版本已重命名保留: " + sib + " -> " + new_name)
+            except OSError:
+                pass
+    except Exception:
+        pass
 
 
 def cleanup_update_leftovers():

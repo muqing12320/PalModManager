@@ -22,6 +22,10 @@ echo ======== Release v!VERSION! ========
 venv\Scripts\python.exe -c "import json,io;v='!VERSION!';json.dump({'version':v,'download_url':'https://github.com/muqing12320/PalModManager/releases/download/v'+v+'/PalModManager.exe','notes':'v'+v},io.open('version.json','w',encoding='utf-8'),ensure_ascii=False)"
 echo [OK] version.json
 
+:: 1.5 version_info.txt（内嵌版本信息，供自更新识别旧版本）
+venv\Scripts\python.exe scripts\gen_version_info.py
+echo [OK] version_info.txt
+
 :: 2. updater.py
 powershell -Command "(gc src/utils/updater.py -Raw -Encoding UTF8) -replace 'CURRENT_VERSION = \""[\d.]+\""', 'CURRENT_VERSION = \""!VERSION!\""' | sc src/utils/updater.py -Encoding UTF8 -NoNew"
 echo [OK] updater.py
