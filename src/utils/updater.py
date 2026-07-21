@@ -17,7 +17,7 @@ import threading
 from typing import Optional, Callable
 
 
-CURRENT_VERSION = "1.2.3"
+CURRENT_VERSION = "1.2.4"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 
@@ -40,8 +40,7 @@ def check_for_update(url: str = UPDATE_URL) -> tuple:
         remote = data.get('version', '')
         if not remote:
             return None, "No version field"
-        # Pass mirror URL through for download phase
-        data['_mirror'] = data.get('mirror_url', '')
+        # 仅透出必要字段
         if _version_le(remote, CURRENT_VERSION):
             return {}, ""
         return data, ""
@@ -72,7 +71,7 @@ def _download_simple(dl_url: str,
                      timeout: int = 30
                      ) -> Optional[str]:
     """单线程下载（兜底方案）。返回临时文件路径或 None。"""
-    BUFFER = 512 * 1024
+    BUFFER = 1024 * 1024
     tmp = None
     try:
         req = urllib.request.Request(dl_url)
@@ -103,33 +102,55 @@ def _download_simple(dl_url: str,
         return None
 
 
+def _probe_size(dl_url: str, ctx, timeout: int = 15):
+    """用 Range: bytes=0-0 探测文件总大小并确认服务器是否支持分片。
+
+    返回 (total, supports_range)。相比 HEAD 更可靠：很多 CDN 对 HEAD 返回
+    200，但对带 Range 的 GET 返回 206，这里直接以实际下载响应为准。
+    """
+    try:
+        req = urllib.request.Request(dl_url)
+        req.add_header('User-Agent', 'PalModManager/1.0')
+        req.add_header('Range', 'bytes=0-0')
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+            if resp.status == 206:
+                cr = resp.headers.get('Content-Range', '')
+                try:
+                    total = int(cr.rsplit('/', 1)[1])
+                except Exception:
+                    total = int(resp.headers.get('Content-Length', 0) or 0)
+                return total, True
+            try:
+                total = int(resp.headers.get('Content-Length', 0) or 0)
+            except Exception:
+                total = 0
+            return total, False
+    except Exception:
+        return 0, False
+
+
 def _download_parallel(dl_url: str,
                        progress: Optional[Callable[[int, int], None]] = None,
                        cancel_check: Optional[Callable[[], bool]] = None,
-                       parts: int = 4,
                        read_timeout: int = 20,
-                       retries: int = 2
+                       retries: int = 3
                        ) -> Optional[str]:
-    """多线程分片下载（类似 FDM 的多连接加速）。
+    """多线程分片下载（类似 FDM / IDM 的多连接加速）。
 
-    通过 HTTP Range 把文件切成多段并行下载再合并，提升带宽利用率。
-    关键修正（修复“进度到 50% 后骤慢”）：
-      * 每个分片必须返回 206 Partial Content，否则视为服务器忽略了 Range，
-        立即整体中止并回退单线程（避免把整文件当成某个分片重复下载）。
-      * 每个分片按自身长度限量读取，绝不读到 EOF——即使服务器误返回整文件
-        也不会在尾部多传数倍数据。
-      * 分片支持有限次重试，平滑瞬时连接抖动。
-    任意分片失败/被取消都返回 None 交由兜底方案处理。
+    提速策略：
+      * 自适应分片数：按文件大小在 4~16 段间自动选择（每段约 4MB），
+        充分利用带宽又不至于连接过多被限流。
+      * 同一服务器多连接：分片并行下载同一地址，充分利用带宽。
+      * 每个分片用 1MB 大缓冲读取，减少系统调用、提升吞吐。
+      * 必须返回 206 且按分片长度限量读取，避免“整文件当成分片重复下载”。
+      * 分片有限次重试，平滑瞬时连接抖动。
+    任意分片失败/被取消返回 None 交由兜底单线程方案处理。
     """
     try:
         ctx = _make_ssl_context()
-        # 先用 HEAD 探明大小与是否支持 Range
-        head = urllib.request.Request(dl_url, method='HEAD')
-        head.add_header('User-Agent', 'PalModManager/1.0')
-        with urllib.request.urlopen(head, timeout=15, context=ctx) as resp:
-            total = int(resp.headers.get('Content-Length', 0))
-            accept_ranges = resp.headers.get('Accept-Ranges', '').lower()
-        if total <= 0 or 'bytes' not in accept_ranges:
+        # 用 GET(Range: bytes=0-0) 探测大小与 Range 支持（比 HEAD 更可靠）
+        total, supports = _probe_size(dl_url, ctx)
+        if total <= 0 or not supports:
             return None
 
         out = tempfile.NamedTemporaryFile(delete=False, suffix='.exe')
@@ -139,14 +160,19 @@ def _download_parallel(dl_url: str,
         with open(out_path, 'wb') as f:
             f.truncate(total)
 
+        # 自适应分片数：每片约 4MB，min 4 / max 16
+        parts = max(4, min(16, total // (4 * 1024 * 1024)))
+        parts = max(2, min(parts, 16))
         ranges = _split_ranges(total, parts)
+        # 多源时按分片轮询分配到不同 host，叠加带宽
         state = {'downloaded': 0}
         lock = threading.Lock()
         results = [None] * len(ranges)
 
-        BUF = 256 * 1024
+        BUF = 1024 * 1024
 
         def worker(idx, rng):
+            host = dl_url
             start, end = rng
             need = end - start + 1
             for attempt in range(retries + 1):
@@ -154,7 +180,7 @@ def _download_parallel(dl_url: str,
                     results[idx] = 'cancel'
                     return
                 try:
-                    req = urllib.request.Request(dl_url)
+                    req = urllib.request.Request(host)
                     req.add_header('User-Agent', 'PalModManager/1.0')
                     req.add_header('Range', f'bytes={start}-{end}')
                     with urllib.request.urlopen(req, timeout=read_timeout, context=ctx) as resp:
@@ -204,14 +230,13 @@ def _download_parallel(dl_url: str,
 
 def download_update(url: str,
                     progress: Optional[Callable[[int, int], None]] = None,
-                    mirror: str = '',
                     cancel_check: Optional[Callable[[], bool]] = None,
                     method_cb: Optional[Callable[[str], None]] = None,
                     ) -> Optional[str]:
     """Download the update EXE.
 
-    优先尝试多线程分片下载（主地址），失败/卡死则尽快退回单线程
-    （主地址 -> 镜像），保证进度能持续推进、不会永久卡住。
+    优先尝试多线程分片下载，失败/卡死则尽快退回单线程下载，
+    保证进度能持续推进、不会永久卡住。
     *progress(downloaded, total)* 报告进度；*cancel_check()* 返回 True 时中止；
     *method_cb(text)* 在切换下载方式时回调，用于 UI 显示当前阶段/方式。
     返回临时文件路径，或 None。
@@ -223,24 +248,19 @@ def download_update(url: str,
             except Exception:
                 pass
 
-    # 1) 并行（主地址），卡死会在 read_timeout 内暴露
-    _say("方式：多线程分片加速（主服务器）")
+    # 1) 并行，卡死会在 read_timeout 内暴露
+    _say("方式：多线程分片加速")
     r = _download_parallel(url, progress, cancel_check)
     if r:
         return r
-    # 2) 退回单线程（主地址 -> 镜像）
+    # 2) 退回单线程
     _say("方式：单线程下载（更稳定）")
-    return _download_update_fallback(url, mirror, progress, cancel_check)
+    return _download_update_fallback(url, progress, cancel_check)
 
 
-def _download_update_fallback(url, mirror, progress, cancel_check):
-    for dl_url in (url, mirror):
-        if not dl_url:
-            continue
-        r = _download_simple(dl_url, progress, cancel_check)
-        if r:
-            return r
-    return None
+def _download_update_fallback(url, progress, cancel_check):
+    r = _download_simple(url, progress, cancel_check)
+    return r
 
 
 # 自更新专用启动参数：新版本 exe 以该参数启动时负责完成文件替换

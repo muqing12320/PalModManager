@@ -90,7 +90,7 @@ pal-mod-manager/
 
 ### 双进程替换流程（核心）
 
-1. **下载**：`download_update()` 以 512KB 缓冲区下载新 EXE 到临时文件，失败自动尝试 `mirror_url` 镜像。
+1. **下载**：`download_update()` 优先多线程分片下载（1MB 缓冲、自适应 4~16 段），失败时退回单线程下载到临时文件。
 2. **暂存**：`apply_update()` 把下载好的新 EXE 复制为系统 temp（`<TEMP>/PalModManagerUpdate/`）下的 `PalModManager_new.exe`，然后用 **`subprocess.Popen`（脱离父进程 + 清掉 `_MEIPASS` 环境变量）** 直接拉起它，并传入 `--apply-update` 与当前 EXE 路径参数。随后当前程序立即 `os._exit(0)` 退出、释放文件锁。**用户原目录此刻不写入任何中间文件。**
 3. **替换**：新进程（`PalModManager_new.exe`，位于 temp）启动时，`main.py` 最开头调用 `finish_pending_update()` 检测到 `--apply-update`，执行：
    - 等待约 3 秒，确保旧程序已退出并释放文件句柄；

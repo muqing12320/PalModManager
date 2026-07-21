@@ -19,7 +19,7 @@ goto :ASK
 echo ======== Release v!VERSION! ========
 
 :: 1. version.json
-venv\Scripts\python.exe -c "import json,io;v='!VERSION!';json.dump({'version':v,'download_url':'https://github.com/muqing12320/PalModManager/releases/download/v'+v+'/PalModManager.exe','mirror_url':'https://zyx123.xyz/PalModManager.exe','notes':'v'+v},io.open('version.json','w',encoding='utf-8'),ensure_ascii=False)"
+venv\Scripts\python.exe -c "import json,io;v='!VERSION!';json.dump({'version':v,'download_url':'https://github.com/muqing12320/PalModManager/releases/download/v'+v+'/PalModManager.exe','notes':'v'+v},io.open('version.json','w',encoding='utf-8'),ensure_ascii=False)"
 echo [OK] version.json
 
 :: 2. updater.py

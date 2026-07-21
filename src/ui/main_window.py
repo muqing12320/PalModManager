@@ -58,10 +58,9 @@ class UpdateDownloader(QThread):
     download_failed = pyqtSignal(str)             # 错误信息
     canceled = pyqtSignal()                       # 用户取消
 
-    def __init__(self, url: str, mirror: str = ''):
+    def __init__(self, url: str):
         super().__init__()
         self.url = url
-        self.mirror = mirror
         self._cancelled = False
 
     def run(self):
@@ -81,7 +80,6 @@ class UpdateDownloader(QThread):
             saved = download_update(
                 self.url,
                 progress=on_progress,
-                mirror=self.mirror,
                 cancel_check=lambda: self._cancelled,
                 method_cb=on_method,
             )
@@ -1620,7 +1618,7 @@ class MainWindow(QMainWindow):
         cancel_btn.clicked.connect(do_cancel)
 
         # 下载在独立线程中进行，UI 全程可响应、可取消
-        self._update_worker = UpdateDownloader(url, mirror=info.get('_mirror', ''))
+        self._update_worker = UpdateDownloader(url)
         self._update_worker.progress_changed.connect(on_progress_changed)
         self._update_worker.download_finished.connect(on_finished)
         self._update_worker.download_failed.connect(on_failed)
