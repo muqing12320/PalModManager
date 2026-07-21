@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional, Callable
 
 
-CURRENT_VERSION = "1.1.15"
+CURRENT_VERSION = "1.1.16"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 
@@ -261,6 +261,16 @@ def apply_update(downloaded_path: str) -> bool:
     if not current_exe.lower().endswith(".exe"):
         return False
     if not os.path.isfile(downloaded_path):
+        return False
+
+    # 校验下载到的确实是 Windows 可执行文件（DOS 头 'MZ'），
+    # 避免把 404 页面等错误内容当 exe 启动导致“闪退”。
+    try:
+        with open(downloaded_path, "rb") as fh:
+            head = fh.read(2)
+        if head != b"MZ" or os.path.getsize(downloaded_path) < 1024 * 1024:
+            return False
+    except Exception:
         return False
 
     try:

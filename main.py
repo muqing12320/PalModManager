@@ -16,6 +16,31 @@ from src.ui.main_window import MainWindow
 from src.utils.config import AppConfig
 from src.utils.updater import finish_pending_update, cleanup_update_leftovers
 
+import traceback
+
+
+def _global_excepthook(etype, evalue, tb):
+    """全局异常钩子：把未捕获的异常显示出来并写入日志，避免静默闪退。"""
+    text = "".join(traceback.format_exception(etype, evalue, tb))
+    # 写到 exe 同目录的 crash.log 便于排查
+    try:
+        log_path = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "crash.log")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(text + "\n")
+    except Exception:
+        pass
+    # 若已有 Qt 应用则弹窗提示
+    try:
+        from PyQt5.QtWidgets import QApplication, QMessageBox
+        app = QApplication.instance()
+        if app is not None:
+            QMessageBox.critical(None, "程序错误", text)
+    except Exception:
+        pass
+
+
+sys.excepthook = _global_excepthook
+
 
 def main():
     """Main entry point."""

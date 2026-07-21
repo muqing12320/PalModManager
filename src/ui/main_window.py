@@ -4,6 +4,7 @@ Main Application Window for 帕鲁Mod管理器.
 import os
 import sys
 import json
+import time
 import zipfile
 import subprocess
 from pathlib import Path
@@ -1356,15 +1357,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "错误", "没有下载地址。")
             return
         
-        from PyQt5.QtWidgets import QProgressDialog
-        progress = QProgressDialog("正在下载更新...", "取消", 0, 100, self)
-        progress.setWindowTitle("下载更新")
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.show()
-        
         from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout,
-                                      QLabel, QProgressBar, QPushButton)
+                                      QLabel, QProgressBar, QPushButton,
+                                      QGridLayout)
         dlg = QDialog(self)
         dlg.setWindowTitle("下载更新")
         dlg.setFixedSize(460, 260)
