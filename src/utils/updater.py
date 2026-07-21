@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional, Callable
 
 
-CURRENT_VERSION = "1.1.16"
+CURRENT_VERSION = "1.1.17"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 
@@ -148,17 +148,21 @@ def _download_parallel(dl_url: str,
                 req = urllib.request.Request(dl_url)
                 req.add_header('User-Agent', 'PalModManager/1.0')
                 req.add_header('Range', f'bytes={start}-{end}')
+                BUF = 256 * 1024
                 with urllib.request.urlopen(req, timeout=read_timeout, context=ctx) as resp:
-                    data = resp.read()
-                if cancel_check and cancel_check():
-                    return
-                with open(out_path, 'r+b') as f:
-                    f.seek(start)
-                    f.write(data)
-                with lock:
-                    state['downloaded'] += len(data)
-                    if progress:
-                        progress(state['downloaded'], total)
+                    with open(out_path, 'r+b') as f:
+                        f.seek(start)
+                        while True:
+                            if cancel_check and cancel_check():
+                                return
+                            chunk = resp.read(BUF)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            with lock:
+                                state['downloaded'] += len(chunk)
+                                if progress:
+                                    progress(state['downloaded'], total)
             except Exception:
                 errors.append(True)
 

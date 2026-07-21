@@ -1427,7 +1427,7 @@ class MainWindow(QMainWindow):
         def on_progress_changed(done, total, method=""):
             now = time.time()
             dt = now - last_ts[0]
-            if dt >= 0.4 or method:
+            if dt >= 0.15 or method:
                 dd = done - last_done[0]
                 speed = dd / dt if dt > 0 else 0
                 last_ts[0] = now
@@ -1631,7 +1631,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """Handle window close event."""
         # Save window geometry
-        self._config.set('window_geometry', self.saveGeometry().hex())
-        self._config.set('window_state', self.saveState().hex())
+        self._config.set('window_geometry', bytes(self.saveGeometry()).hex())
+        self._config.set('window_state', bytes(self.saveState()).hex())
 
         event.accept()
