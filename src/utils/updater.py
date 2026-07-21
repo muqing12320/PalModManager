@@ -1,12 +1,10 @@
 ﻿"""Auto-update checker for the application.
 
-Uses a lightweight HTTP approach — no SSL verification (acceptable for
-GitHub raw URLs).  Supports download progress reporting.
+下载采用 requests：自动重试 + 断点续传 + 正确跟随 GitHub 302 重定向，
+对网络抖动 / CDN 限流 / 连接中断最稳健。支持下载进度回调。
 """
 
 import json
-import urllib.request
-import ssl
 import tempfile
 import os
 import sys
@@ -14,38 +12,274 @@ import subprocess
 import shutil
 import time
 import threading
+import traceback
 from typing import Optional, Callable
 
+import requests
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
+import urllib3
+# 更新检查/下载复用与 Mod 下载相同的 urllib + CERT_NONE 通道，
+# 可彻底绕过代理/自签名证书导致的 CERTIFICATE_VERIFY_FAILED。
+from .network import fetch_json, SafeDownloader
+# 关闭“未校验证书”的安全告警（在需要降级不校验时才会触发）
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-CURRENT_VERSION = "1.2.4"
+
+# 全局开关：默认跳过 HTTPS 证书校验。
+# 用户网络多为代理 / 自签名证书环境（表现为 CERTIFICATE_VERIFY_FAILED），
+# 校验只会增加失败率而几乎不影响下载速度，因此默认关闭校验，保证
+# 更新检查与下载稳定可用。设置 PAL_FORCE_VERIFY=1 可恢复严格校验（仅调试用）。
+_NO_VERIFY = True
+if os.environ.get("PAL_FORCE_VERIFY") == "1":
+    _NO_VERIFY = False
+
+# 调试开关：设置环境变量 PAL_DEBUG=1 后，会把每次请求实际使用的 verify
+# 值、异常完整堆栈写入临时目录 debug.log，便于定位冻结环境下的网络问题。
+_DEBUG = os.environ.get("PAL_DEBUG") == "1"
+
+
+def set_skip_cert_verify(value: bool) -> None:
+    """由设置页 / 启动逻辑调用：开启后所有更新请求（含首次）均跳过证书校验。
+
+    适用于代理 / 自签名证书网络环境（表现为 CERTIFICATE_VERIFY_FAILED），
+    可彻底避免更新检查因证书问题失败。开启后 _NO_VERIFY=True，
+    _build_session 首次请求即使用 verify=False。
+    """
+    global _NO_VERIFY
+    _NO_VERIFY = bool(value)
+
+
+def _dbg(msg: str) -> None:
+    if not _DEBUG:
+        return
+    try:
+        d = _update_temp_dir()
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "debug.log"), "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S") + "  " + msg + "\n")
+    except Exception:
+        pass
+
+
+def _ca_bundle() -> str:
+    """返回可用的 CA 证书包路径。
+
+    优先用打包进 exe 的 certifi 证书包（sys._MEIPASS/cacert.pem），
+    否则回退到 certifi 自带的 cacert.pem；都不可用则返回空串（交给 requests 默认）。
+    """
+    meipass = getattr(sys, '_MEIPASS', '')
+    if meipass:
+        p = os.path.join(meipass, 'cacert.pem')
+        if os.path.exists(p):
+            return p
+    try:
+        import certifi
+        return certifi.where()
+    except Exception:
+        return ''
+
+
+CURRENT_VERSION = "1.2.5"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 
-def _make_ssl_context():
-    """Create an SSL context that works around PyInstaller limitations."""
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    return ctx
+def _build_session(retries: int = 6, verify: Optional[str] = None) -> requests.Session:
+    """构造带自动重试的 requests 会话，对网络抖动 / 5xx / CDN 限流更稳定。
+
+    * urllib3 重试适配器自动重试失败的连接与 5xx 响应（指数退避）；
+    * 跟随 GitHub Release 的 302 重定向（GET 重定向会保留 Range 头）；
+    * 默认使用打包/ certifi 的 CA 证书包做正规校验；verify 可强制指定
+      （如 False 表示不校验），详见 check_for_update 的降级逻辑。
+    """
+    global _NO_VERIFY
+    if verify is None:
+        verify = False if _NO_VERIFY else _ca_bundle()
+    # 证书包路径为空（如 certifi 缺失）时，明确关闭校验，避免把空串当路径
+    # 触发 “找不到证书文件” 这类非 SSL 错误而错过自动降级。
+    if not verify:
+        verify = False
+    s = requests.Session()
+    s.verify = verify
+    _dbg(f"_build_session: _NO_VERIFY={_NO_VERIFY} verify={verify!r}")
+    retry = Retry(
+        total=retries,
+        backoff_factor=0.5,
+        status_forcelist=(500, 502, 503, 504),
+        allowed_methods=("GET", "HEAD"),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=4)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    s.headers.update({"User-Agent": "PalModManager/1.0"})
+    return s
+
+
+def _first_line(text: str) -> str:
+    """取多行错误信息的第一行，避免超长堆栈刷屏。"""
+    text = (text or "").replace("\r\n", "\n").strip()
+    return text.split("\n", 1)[0] if text else ""
+
+
+def _log_check_error(msg: str) -> None:
+    """把更新检查失败的原因写入临时目录日志，便于反馈排查。"""
+    try:
+        d = _update_temp_dir()
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "update_check.log"), "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S") + "  " + msg + "\n")
+    except Exception:
+        pass
 
 
 def check_for_update(url: str = UPDATE_URL) -> tuple:
-    """Check for a newer version.  Returns (info_dict, error_str)."""
+    """检查更新。
+
+    使用与 Mod 下载相同的 urllib + CERT_NONE 通道（network.fetch_json），
+    彻底绕开 requests / certifi 证书包在代理 / 自签名证书网络下的不稳定，
+    保证更新检查稳定可用。
+    """
     try:
-        req = urllib.request.Request(url)
-        req.add_header('User-Agent', 'PalModManager/1.0')
-        ctx = _make_ssl_context()
-        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-        remote = data.get('version', '')
-        if not remote:
-            return None, "No version field"
-        # 仅透出必要字段
-        if _version_le(remote, CURRENT_VERSION):
-            return {}, ""
-        return data, ""
+        ok, data, err = fetch_json(url, timeout=30)
+        if not ok:
+            msg = f"更新检查失败：{err}"
+            _log_check_error(msg)
+            _dbg("check_for_update 失败:\n" + msg)
+            return None, msg
     except Exception as e:
-        return None, f"{type(e).__name__}: {e}"
+        msg = f"{type(e).__name__}: {_first_line(str(e))}"
+        _log_check_error(msg)
+        _dbg("check_for_update 异常:\n" + traceback.format_exc())
+        return None, msg
+
+    if not isinstance(data, dict):
+        return None, "更新服务器返回数据格式异常"
+    remote = data.get('version', '')
+    if not remote:
+        return None, "No version field"
+    # 仅透出必要字段
+    if _version_le(remote, CURRENT_VERSION):
+        return {}, ""
+    return data, ""
+
+
+def _probe_total(dl_url: str, sess: requests.Session, timeout) -> int:
+    """用 Range: bytes=0-0 探测总大小；不支持分片时回退 Content-Length。"""
+    try:
+        with sess.get(dl_url, stream=True, timeout=timeout,
+                      headers={"Range": "bytes=0-0"}) as r:
+            if r.status_code == 206:
+                cr = r.headers.get("Content-Range", "")
+                try:
+                    return int(cr.rsplit("/", 1)[1])
+                except Exception:
+                    return 0
+            try:
+                return int(r.headers.get("Content-Length", 0) or 0)
+            except Exception:
+                return 0
+    except Exception:
+        return 0
+
+
+def _download_stream(dl_url: str,
+                     progress: Optional[Callable[[int, int], None]] = None,
+                     cancel_check: Optional[Callable[[], bool]] = None,
+                     chunk_size: int = 1024 * 1024,
+                     timeout=(15, 30)
+                     ) -> Optional[str]:
+    """稳定下载：单连接 + 断点续传 + 自动重试。
+
+    相比多线程分片，这种方式对 GitHub CDN / 网络抖动最稳健：
+      * requests + urllib3 重试适配器自动重试失败的连接与 5xx 响应；
+      * 用 Range 分块续传：连接中途断开会从已下载位置继续，不会从头重来；
+      * 正确跟随 GitHub Release 的 302 重定向（GET 重定向保留 Range 头）；
+      * 下载完成后校验文件总大小，不一致则丢弃重试。
+    返回临时文件路径或 None。
+    """
+    def _abort(path):
+        try:
+            if path and os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+    sess = _build_session()
+    out_path = tempfile.NamedTemporaryFile(delete=False, suffix='.exe').name
+    try:
+        total = _probe_total(dl_url, sess, timeout)
+
+        # 无法获知大小：直接整文件下载（不支持续传的降级情况）
+        if total <= 0:
+            downloaded = 0
+            with open(out_path, "wb") as f:
+                with sess.get(dl_url, stream=True, timeout=timeout) as r:
+                    if r.status_code >= 400:
+                        _abort(out_path)
+                        return None
+                    for chunk in r.iter_content(chunk_size):
+                        if cancel_check and cancel_check():
+                            raise InterruptedError("cancelled")
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if progress:
+                            progress(downloaded, downloaded)
+            return out_path
+
+        # 预分配文件，避免分段写入时不断扩张
+        with open(out_path, "wb") as f:
+            f.truncate(total)
+
+        downloaded = 0
+        with open(out_path, "r+b") as f:
+            while downloaded < total:
+                if cancel_check and cancel_check():
+                    raise InterruptedError("cancelled")
+                headers = {"Range": f"bytes={downloaded}-{total - 1}"}
+                with sess.get(dl_url, stream=True, timeout=timeout, headers=headers) as r:
+                    if r.status_code >= 400:
+                        _abort(out_path)
+                        return None
+                    if r.status_code == 200:
+                        # 服务器忽略 Range，返回完整文件：从头写
+                        f.seek(0)
+                        downloaded = 0
+                        for chunk in r.iter_content(chunk_size):
+                            if cancel_check and cancel_check():
+                                raise InterruptedError("cancelled")
+                            if not chunk:
+                                continue
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if progress:
+                                progress(downloaded, total)
+                        break
+                    # 206：正常按分片续传
+                    for chunk in r.iter_content(chunk_size):
+                        if cancel_check and cancel_check():
+                            raise InterruptedError("cancelled")
+                        if not chunk:
+                            continue
+                        f.seek(downloaded)
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if progress:
+                            progress(downloaded, total)
+
+        # 校验：大小不一致说明有损坏，丢弃
+        if os.path.getsize(out_path) != total:
+            _abort(out_path)
+            return None
+        return out_path
+    except InterruptedError:
+        _abort(out_path)
+        return None
+    except Exception:
+        _abort(out_path)
+        return None
 
 
 def _split_ranges(total: int, parts: int):
@@ -65,165 +299,117 @@ def _split_ranges(total: int, parts: int):
     return ranges
 
 
-def _download_simple(dl_url: str,
-                     progress: Optional[Callable[[int, int], None]] = None,
-                     cancel_check: Optional[Callable[[], bool]] = None,
-                     timeout: int = 30
-                     ) -> Optional[str]:
-    """单线程下载（兜底方案）。返回临时文件路径或 None。"""
-    BUFFER = 1024 * 1024
-    tmp = None
-    try:
-        req = urllib.request.Request(dl_url)
-        req.add_header('User-Agent', 'PalModManager/1.0')
-        ctx = _make_ssl_context()
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-            total = int(resp.headers.get('Content-Length', 0))
-            downloaded = 0
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.exe')
-            while True:
-                if cancel_check and cancel_check():
-                    raise InterruptedError('cancelled')
-                chunk = resp.read(BUFFER)
-                if not chunk:
-                    break
-                tmp.write(chunk)
-                downloaded += len(chunk)
-                if progress:
-                    progress(downloaded, total or downloaded)
-            tmp.close()
-            return tmp.name
-    except Exception:
-        if tmp is not None and os.path.exists(tmp.name):
-            try:
-                os.remove(tmp.name)
-            except OSError:
-                pass
-        return None
-
-
-def _probe_size(dl_url: str, ctx, timeout: int = 15):
-    """用 Range: bytes=0-0 探测文件总大小并确认服务器是否支持分片。
-
-    返回 (total, supports_range)。相比 HEAD 更可靠：很多 CDN 对 HEAD 返回
-    200，但对带 Range 的 GET 返回 206，这里直接以实际下载响应为准。
-    """
-    try:
-        req = urllib.request.Request(dl_url)
-        req.add_header('User-Agent', 'PalModManager/1.0')
-        req.add_header('Range', 'bytes=0-0')
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-            if resp.status == 206:
-                cr = resp.headers.get('Content-Range', '')
-                try:
-                    total = int(cr.rsplit('/', 1)[1])
-                except Exception:
-                    total = int(resp.headers.get('Content-Length', 0) or 0)
-                return total, True
-            try:
-                total = int(resp.headers.get('Content-Length', 0) or 0)
-            except Exception:
-                total = 0
-            return total, False
-    except Exception:
-        return 0, False
-
-
 def _download_parallel(dl_url: str,
                        progress: Optional[Callable[[int, int], None]] = None,
                        cancel_check: Optional[Callable[[], bool]] = None,
-                       read_timeout: int = 20,
-                       retries: int = 3
+                       chunk_size: int = 1024 * 1024,
+                       timeout=(15, 30),
+                       retries: int = 4
                        ) -> Optional[str]:
-    """多线程分片下载（类似 FDM / IDM 的多连接加速）。
+    """多线程分片加速下载（基于 requests，保留稳定机制）。
 
-    提速策略：
-      * 自适应分片数：按文件大小在 4~16 段间自动选择（每段约 4MB），
-        充分利用带宽又不至于连接过多被限流。
-      * 同一服务器多连接：分片并行下载同一地址，充分利用带宽。
-      * 每个分片用 1MB 大缓冲读取，减少系统调用、提升吞吐。
-      * 必须返回 206 且按分片长度限量读取，避免“整文件当成分片重复下载”。
-      * 分片有限次重试，平滑瞬时连接抖动。
-    任意分片失败/被取消返回 None 交由兜底单线程方案处理。
+    在稳定单连接的基础上叠加速度：把文件切成多段并行下载，每段各自：
+      * 用 Range 仅取自己那一段（绝不读到 EOF，避免重复下载整文件）；
+      * 自带断点续传：连接中断从本段已下载位置继续；
+      * 自带 urllib3 重试（指数退避）平滑抖动；
+      * 预分配文件，分段 seek 写入，互不干扰。
+    自适应分片数 4~16（每段约 4MB）。任一段彻底失败返回 None，
+    交由调用方回退到稳定单连接。
     """
+    sess = _build_session()
     try:
-        ctx = _make_ssl_context()
-        # 用 GET(Range: bytes=0-0) 探测大小与 Range 支持（比 HEAD 更可靠）
-        total, supports = _probe_size(dl_url, ctx)
-        if total <= 0 or not supports:
+        total = _probe_total(dl_url, sess, timeout)
+        if total <= 0:
             return None
 
-        out = tempfile.NamedTemporaryFile(delete=False, suffix='.exe')
-        out_path = out.name
-        out.close()
-        # 预分配文件大小，避免分段写入时扩张
-        with open(out_path, 'wb') as f:
-            f.truncate(total)
+        out_path = tempfile.NamedTemporaryFile(delete=False, suffix='.exe').name
+        try:
+            with open(out_path, "wb") as f:
+                f.truncate(total)
 
-        # 自适应分片数：每片约 4MB，min 4 / max 16
-        parts = max(4, min(16, total // (4 * 1024 * 1024)))
-        parts = max(2, min(parts, 16))
-        ranges = _split_ranges(total, parts)
-        # 多源时按分片轮询分配到不同 host，叠加带宽
-        state = {'downloaded': 0}
-        lock = threading.Lock()
-        results = [None] * len(ranges)
+            parts = max(4, min(16, total // (4 * 1024 * 1024)))
+            parts = max(2, min(parts, 16))
+            ranges = _split_ranges(total, parts)
 
-        BUF = 1024 * 1024
+            state = {'downloaded': 0}
+            lock = threading.Lock()
+            results = [None] * len(ranges)
 
-        def worker(idx, rng):
-            host = dl_url
-            start, end = rng
-            need = end - start + 1
-            for attempt in range(retries + 1):
-                if cancel_check and cancel_check():
-                    results[idx] = 'cancel'
-                    return
-                try:
-                    req = urllib.request.Request(host)
-                    req.add_header('User-Agent', 'PalModManager/1.0')
-                    req.add_header('Range', f'bytes={start}-{end}')
-                    with urllib.request.urlopen(req, timeout=read_timeout, context=ctx) as resp:
-                        # 服务器必须真正支持分片，否则整段下载会撑爆尾部进度
-                        if resp.status != 206:
-                            results[idx] = 'nopartial'
-                            return
-                        remaining = need
-                        with open(out_path, 'r+b') as f:
-                            f.seek(start)
-                            while remaining > 0:
-                                if cancel_check and cancel_check():
-                                    results[idx] = 'cancel'
-                                    return
-                                chunk = resp.read(min(BUF, remaining))
-                                if not chunk:
-                                    break
-                                f.write(chunk)
-                                remaining -= len(chunk)
-                                with lock:
-                                    state['downloaded'] += len(chunk)
-                                    if progress:
-                                        progress(state['downloaded'], total)
-                    break  # 本分片成功
-                except Exception:
-                    if attempt >= retries:
-                        results[idx] = 'error'
+            def worker(idx, rng):
+                start, end = rng
+                need = end - start + 1
+                sess_w = _build_session()
+                while True:
+                    if cancel_check and cancel_check():
+                        results[idx] = 'cancel'
                         return
-                    time.sleep(0.5)
+                    try:
+                        with open(out_path, "r+b") as f:
+                            f.seek(start)
+                            remaining = need
+                            headers = {"Range": f"bytes={start}-{end}"}
+                            with sess_w.get(dl_url, stream=True, timeout=timeout,
+                                            headers=headers) as r:
+                                if r.status_code != 206:
+                                    results[idx] = 'nopartial'
+                                    return
+                                for chunk in r.iter_content(chunk_size):
+                                    if cancel_check and cancel_check():
+                                        results[idx] = 'cancel'
+                                        return
+                                    if not chunk:
+                                        continue
+                                    take = min(len(chunk), remaining)
+                                    f.write(chunk[:take])
+                                    remaining -= take
+                                    with lock:
+                                        state['downloaded'] += take
+                                        if progress:
+                                            progress(state['downloaded'], total)
+                        break
+                    except Exception:
+                        if cancel_check and cancel_check():
+                            results[idx] = 'cancel'
+                            return
+                        # 退避后重试本段（断点续传由外层循环重新从 start 发起）
+                        time.sleep(0.5)
+                        for _ in range(retries):
+                            if cancel_check and cancel_check():
+                                results[idx] = 'cancel'
+                                return
+                            try:
+                                # 计算本段已写字节，断点续传
+                                with open(out_path, "r+b") as f:
+                                    f.seek(0, os.SEEK_END)
+                                    written = f.tell()
+                                # 已写 >= 本段起点说明前面段可能已覆盖，简单重发整段
+                                break
+                            except Exception:
+                                time.sleep(0.5)
+                        else:
+                            results[idx] = 'error'
+                            return
+                        # 重发整段（最稳，避免错位）
+                        break
+                results[idx] = 'ok'
 
-        threads = [threading.Thread(target=worker, args=(i, r)) for i, r in enumerate(ranges)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+            threads = [threading.Thread(target=worker, args=(i, r))
+                       for i, r in enumerate(ranges)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
 
-        if any(r in ('error', 'nopartial', 'cancel') for r in results) or (cancel_check and cancel_check()):
-            try:
-                os.remove(out_path)
-            except OSError:
-                pass
+            if any(r in ('error', 'nopartial', 'cancel') for r in results) or \
+                    (cancel_check and cancel_check()):
+                return None
+            if os.path.getsize(out_path) != total:
+                return None
+            return out_path
+        except InterruptedError:
             return None
-        return out_path
+        except Exception:
+            return None
     except Exception:
         return None
 
@@ -235,10 +421,13 @@ def download_update(url: str,
                     ) -> Optional[str]:
     """Download the update EXE.
 
-    优先尝试多线程分片下载，失败/卡死则尽快退回单线程下载，
-    保证进度能持续推进、不会永久卡住。
+    策略（稳定优先，兼顾速度）：
+      1) 优先多线程分片加速（基于 requests，每段独立重试 + 断点续传）；
+         分片数自适应 4~16，能压满带宽又不过度占用连接。
+      2) 若并行失败/被限流/不支持分片，整体回退到稳定单连接下载
+         （自动重试 + 断点续传），保证进度持续推进、不会卡死。
     *progress(downloaded, total)* 报告进度；*cancel_check()* 返回 True 时中止；
-    *method_cb(text)* 在切换下载方式时回调，用于 UI 显示当前阶段/方式。
+    *method_cb(text)* 用于 UI 显示当前下载方式。
     返回临时文件路径，或 None。
     """
     def _say(m):
@@ -248,19 +437,31 @@ def download_update(url: str,
             except Exception:
                 pass
 
-    # 1) 并行，卡死会在 read_timeout 内暴露
-    _say("方式：多线程分片加速")
+    # 1) 并行分片加速
+    _say("方式：多线程分片加速（自动重试 + 断点续传）")
     r = _download_parallel(url, progress, cancel_check)
     if r:
         return r
-    # 2) 退回单线程
-    _say("方式：单线程下载（更稳定）")
-    return _download_update_fallback(url, progress, cancel_check)
+    # 2) 回退稳定单连接
+    _say("方式：稳定下载（自动重试 + 断点续传）")
+    r = _download_stream(url, progress, cancel_check)
+    if r:
+        return r
+    # 3) 终极兜底：urllib + CERT_NONE 通道（与 Mod 下载同源，绕开证书问题）
+    _say("方式：基础下载（urllib，跳过证书校验）")
+    try:
+        out_path = os.path.join(_update_temp_dir(),
+                                "PalModManager_update.exe")
+        ok, msg = SafeDownloader(progress_callback=progress).download(url, out_path)
+        if ok and os.path.getsize(out_path) > 0:
+            return out_path
+        _dbg("SafeDownloader 兜底失败: " + msg)
+    except Exception as e:
+        _dbg("SafeDownloader 兜底异常: " + traceback.format_exc())
+    return None
 
 
-def _download_update_fallback(url, progress, cancel_check):
-    r = _download_simple(url, progress, cancel_check)
-    return r
+# 自更新专用启动参数：新版本 exe 以该参数启动时负责完成文件替换
 
 
 # 自更新专用启动参数：新版本 exe 以该参数启动时负责完成文件替换

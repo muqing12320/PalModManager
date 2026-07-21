@@ -50,6 +50,24 @@ def _fmt_time(seconds: float) -> str:
     return f"{h} 时 {m} 分"
 
 
+class UpdateChecker(QThread):
+    """在独立线程中检查更新，避免网络请求卡住主线程（界面未响应）。"""
+
+    check_done = pyqtSignal(object, str)  # info, err
+
+    def __init__(self, url: str):
+        super().__init__()
+        self.url = url
+
+    def run(self):
+        try:
+            from ..utils.updater import check_for_update
+            info, err = check_for_update(self.url)
+            self.check_done.emit(info, err or "")
+        except Exception as e:
+            self.check_done.emit(None, f"{type(e).__name__}: {e}")
+
+
 class UpdateDownloader(QThread):
     """在独立线程中下载更新，通过信号回报进度，避免卡住 UI。"""
 
@@ -107,6 +125,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         
         self._config = AppConfig()
+        # 应用“跳过证书校验”设置（代理/自签名证书网络环境）
+        try:
+            from ..utils.updater import set_skip_cert_verify
+            set_skip_cert_verify(bool(self._config.get('skip_cert_verify', False)))
+        except Exception:
+            pass
         self._mod_manager: ModManager = None
         self._server_mod_manager: ModManager = None
         self._current_mode = 'game'  # 'game' or 'server'
@@ -1439,41 +1463,55 @@ class MainWindow(QMainWindow):
             f"color: {color}; padding: 0 8px; font-size: 11px; font-weight: 600;")
 
     def _check_update(self, silent: bool = False):
-        """Check for updates; the actual download runs in a worker thread
-        so the UI stays responsive.
+        """检查更新：实际网络请求在后台线程 (UpdateChecker) 中进行，
+        UI 全程可响应，不会被卡住（避免“未响应”）。
 
         When silent=True (启动自动检查) no dialog is shown — only the toolbar
         status label is updated with "已是最新版本" / "有可用版本: x".
         """
+        # 防止重入：已有检查在跑则忽略
+        if getattr(self, '_update_checker', None) and self._update_checker.isRunning():
+            return
+
         self.status_bar.showMessage("正在检查更新...")
         self._set_update_status("检查更新中…", "loading")
         try:
-            from ..utils.updater import check_for_update, apply_update, CURRENT_VERSION, UPDATE_URL
+            from ..utils.updater import apply_update, CURRENT_VERSION, UPDATE_URL
         except Exception as e:
             self.status_bar.showMessage(f"加载失败: {e}")
             self._set_update_status("更新模块加载失败", "error")
             if not silent:
                 QMessageBox.warning(self, "错误", f"加载更新模块失败:\n{e}")
             return
-        
-        try:
-            info, err = check_for_update(UPDATE_URL)
-        except Exception as e:
-            self.status_bar.showMessage(f"检查失败: {e}")
-            self._set_update_status("更新检查失败", "error")
-            if not silent:
-                QMessageBox.warning(self, "检查更新", f"检查更新时出错:\n{e}")
-            return
-        
+
+        self._update_check_silent = silent
+
+        def on_checked(info, err):
+            try:
+                self._handle_update_result(info, err, silent, CURRENT_VERSION,
+                                           UPDATE_URL, apply_update)
+            finally:
+                self._update_checker = None
+
+        self._update_checker = UpdateChecker(UPDATE_URL)
+        self._update_checker.check_done.connect(on_checked)
+        self._update_checker.start()
+
+    def _handle_update_result(self, info, err, silent, CURRENT_VERSION,
+                              UPDATE_URL, apply_update):
+        """处理后台检查线程返回的结果（在主线程执行）。"""
         if info is None:
-            self.status_bar.showMessage("连接失败")
+            reason = err or "未知错误"
+            # 无论静默与否，都把失败原因展示出来：状态栏 + 标签悬停提示 + 弹窗
+            self.status_bar.showMessage(f"更新检查失败：{reason}")
             self._set_update_status("更新检查失败", "error")
-            if not silent:
-                QMessageBox.warning(self, "检查更新",
-                    f"无法连接到更新服务器。\n{err}\n\n"
-                    "请确认网络正常，或稍后重试。")
+            self.update_status_lbl.setToolTip(
+                f"更新检查失败：\n{reason}\n\n点击「检查更新」可重试")
+            QMessageBox.warning(self, "检查更新",
+                f"更新检查失败。\n\n原因：{reason}\n\n"
+                "请确认网络正常，或稍后重试。")
             return
-        
+
         if not info:
             self.status_bar.showMessage(f"已是最新版本 ({CURRENT_VERSION})")
             self._set_update_status(f"已是最新版本 ({CURRENT_VERSION})", "ok")
@@ -1481,7 +1519,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "检查更新",
                     f"已是最新版本 ({CURRENT_VERSION})。")
             return
-        
+
         ver = info.get('version', CURRENT_VERSION)
         # 发现新版本：静默模式只更新标签，不弹窗（用户可点击按钮升级）
         self.status_bar.showMessage(f"发现新版本 {ver}")
@@ -1497,12 +1535,12 @@ class MainWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
         if reply != QMessageBox.Yes:
             return
-        
+
         url = info.get('download_url', '')
         if not url:
             QMessageBox.warning(self, "错误", "没有下载地址。")
             return
-        
+
         from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout,
                                       QLabel, QProgressBar, QPushButton,
                                       QGridLayout)

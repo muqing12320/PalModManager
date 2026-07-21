@@ -21,6 +21,7 @@ class AppConfig:
         'backup_enabled': True,
         'backup_path': '',
         'auto_check_updates': True,
+        'skip_cert_verify': True,        # 跳过 HTTPS 证书校验（代理/自签名证书环境，默认开启）
         'last_used_profile': '',
         'window_geometry': None,
         'window_state': None,

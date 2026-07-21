@@ -8,6 +8,13 @@ block_cipher = None
 # 项目根目录
 PROJECT_ROOT = Path(SPECPATH)
 
+# 把 certifi 的 CA 证书包一起打包，使 requests 在冻结环境能做正规 HTTPS 校验
+try:
+    import certifi
+    _cacert = certifi.where()
+except Exception:
+    _cacert = None
+
 a = Analysis(
     ['main.py'],
     pathex=[str(PROJECT_ROOT)],
@@ -15,6 +22,8 @@ a = Analysis(
     datas=[
         # 打包资源文件（如果有的话）
         ('resources', 'resources'),
+        # CA 证书包（requests 校验用），放到冻结根目录下的 cacert.pem
+        *([(_cacert, 'cacert.pem')] if _cacert else []),
     ],
     hiddenimports=[
         'PyQt5.QtCore',
@@ -48,6 +57,12 @@ a = Analysis(
         'urllib',
         'urllib.request',
         'urllib.error',
+        'requests',
+        'requests.adapters',
+        'requests.sessions',
+        'urllib3',
+        'urllib3.util.retry',
+        'charset_normalizer',
         'tempfile',
         'ssl',
         '_ssl',
