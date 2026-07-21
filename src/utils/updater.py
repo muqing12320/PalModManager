@@ -14,11 +14,12 @@ import sys
 import subprocess
 import shutil
 import time
+import threading
 from pathlib import Path
 from typing import Optional, Callable
 
 
-CURRENT_VERSION = "1.1.13"
+CURRENT_VERSION = "1.1.14"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 
@@ -50,46 +51,141 @@ def check_for_update(url: str = UPDATE_URL) -> tuple:
         return None, f"{type(e).__name__}: {e}"
 
 
+def _split_ranges(total: int, parts: int):
+    """把 [0, total) 均匀切成 parts 个 (start, end) 闭区间。"""
+    ranges = []
+    step = max(total // parts, 1)
+    for i in range(parts):
+        start = i * step
+        if start >= total:
+            break
+        end = total - 1 if i == parts - 1 else start + step - 1
+        if end >= total:
+            end = total - 1
+        ranges.append((start, end))
+    if not ranges:
+        ranges = [(0, total - 1)]
+    return ranges
+
+
+def _download_simple(dl_url: str,
+                     progress: Optional[Callable[[int, int], None]] = None
+                     ) -> Optional[str]:
+    """单线程下载（兜底方案）。返回临时文件路径或 None。"""
+    BUFFER = 512 * 1024
+    try:
+        req = urllib.request.Request(dl_url)
+        req.add_header('User-Agent', 'PalModManager/1.0')
+        ctx = _make_ssl_context()
+        with urllib.request.urlopen(req, timeout=300, context=ctx) as resp:
+            total = int(resp.headers.get('Content-Length', 0))
+            downloaded = 0
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.exe')
+            try:
+                while True:
+                    chunk = resp.read(BUFFER)
+                    if not chunk:
+                        break
+                    tmp.write(chunk)
+                    downloaded += len(chunk)
+                    if progress:
+                        progress(downloaded, total or downloaded)
+            finally:
+                tmp.close()
+            return tmp.name
+    except Exception:
+        return None
+
+
+def _download_parallel(dl_url: str,
+                       progress: Optional[Callable[[int, int], None]] = None,
+                       parts: int = 8
+                       ) -> Optional[str]:
+    """多线程分片下载（类似 FDM 的多连接加速）。
+
+    通过 HTTP Range 把文件切成多段并行下载再合并，提升带宽利用率。
+    若服务器不支持 Range / 分片失败，返回 None 交由兜底方案处理。
+    """
+    try:
+        ctx = _make_ssl_context()
+        # 先用 HEAD 探明大小与是否支持 Range
+        head = urllib.request.Request(dl_url, method='HEAD')
+        head.add_header('User-Agent', 'PalModManager/1.0')
+        with urllib.request.urlopen(head, timeout=15, context=ctx) as resp:
+            total = int(resp.headers.get('Content-Length', 0))
+            accept_ranges = resp.headers.get('Accept-Ranges', '').lower()
+        if total <= 0 or 'bytes' not in accept_ranges:
+            return None
+
+        out = tempfile.NamedTemporaryFile(delete=False, suffix='.exe')
+        out_path = out.name
+        out.close()
+        # 预分配文件大小，避免分段写入时扩张
+        with open(out_path, 'wb') as f:
+            f.truncate(total)
+
+        ranges = _split_ranges(total, parts)
+        errors = []
+        state = {'downloaded': 0}
+        lock = threading.Lock()
+
+        def worker(rng):
+            start, end = rng
+            try:
+                req = urllib.request.Request(dl_url)
+                req.add_header('User-Agent', 'PalModManager/1.0')
+                req.add_header('Range', f'bytes={start}-{end}')
+                with urllib.request.urlopen(req, timeout=300, context=ctx) as resp:
+                    data = resp.read()
+                with open(out_path, 'r+b') as f:
+                    f.seek(start)
+                    f.write(data)
+                with lock:
+                    state['downloaded'] += len(data)
+                    if progress:
+                        progress(state['downloaded'], total)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(r,)) for r in ranges]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        if errors:
+            try:
+                os.remove(out_path)
+            except OSError:
+                pass
+            return None
+        return out_path
+    except Exception:
+        return None
+
+
 def download_update(url: str,
                     progress: Optional[Callable[[int, int], None]] = None,
                     mirror: str = '',
                     ) -> Optional[str]:
-    """Download the update EXE. Tries primary URL first, then mirror.
-    
-    *progress(downloaded_bytes, total_bytes)* is called during download.
-    Returns the path to the downloaded file, or None on failure.
+    """Download the update EXE.
+
+    优先用多线程分片下载（多连接加速），失败则退回单线程；
+    主地址不行再试镜像地址。*progress(downloaded, total)* 报告进度。
+    返回临时文件路径，或 None。
     """
-    BUFFER = 512 * 1024  # 512KB chunks for faster throughput
-    
-    def _try_download(dl_url: str) -> Optional[str]:
-        try:
-            req = urllib.request.Request(dl_url)
-            req.add_header('User-Agent', 'PalModManager/1.0')
-            ctx = _make_ssl_context()
-            with urllib.request.urlopen(req, timeout=300, context=ctx) as resp:
-                total = int(resp.headers.get('Content-Length', 0))
-                downloaded = 0
-                tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.exe')
-                try:
-                    while True:
-                        chunk = resp.read(BUFFER)
-                        if not chunk:
-                            break
-                        tmp.write(chunk)
-                        downloaded += len(chunk)
-                        if progress:
-                            progress(downloaded, total or downloaded)
-                finally:
-                    tmp.close()
-                return tmp.name
-        except Exception:
-            return None
-    
-    result = _try_download(url)
-    if result:
-        return result
-    if mirror:
-        return _try_download(mirror)
+    for dl_url in (url, mirror):
+        if not dl_url:
+            continue
+        result = _download_parallel(dl_url, progress)
+        if result:
+            return result
+    for dl_url in (url, mirror):
+        if not dl_url:
+            continue
+        result = _download_simple(dl_url, progress)
+        if result:
+            return result
     return None
 
 
