@@ -17,7 +17,7 @@ import threading
 from typing import Optional, Callable
 
 
-CURRENT_VERSION = "1.2.0"
+CURRENT_VERSION = "1.2.1"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 
@@ -226,6 +226,20 @@ def _download_update_fallback(url, mirror, progress, cancel_check):
 APPLY_UPDATE_ARG = "--apply-update"
 
 
+def _update_temp_dir() -> str:
+    """集中存放更新过程的中间文件（暂存新 exe、备份）。
+
+    所有中间产物都放在系统 temp 的 PalModManagerUpdate 子目录下，
+    避免污染用户的原始安装目录——原目录最终只保留一个最终版本的 exe。
+    """
+    d = os.path.join(tempfile.gettempdir(), "PalModManagerUpdate")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except OSError:
+        pass
+    return d
+
+
 def _clean_env():
     """复制一份环境变量并清除 PyInstaller 的 _MEIPASS，避免子进程复用父进程的临时目录。"""
     env = os.environ.copy()
@@ -277,15 +291,16 @@ def apply_update(downloaded_path: str) -> bool:
 
     try:
         exe_dir = os.path.dirname(current_exe)
-        # 暂存文件名与最终名不同，避免被运行中的文件锁住
-        new_exe = os.path.join(exe_dir, "PalModManager_new.exe")
+        # 暂存新 exe 放在系统 temp（而非原目录），原目录最终只保留最终版
+        temp_dir = _update_temp_dir()
+        new_exe = os.path.join(temp_dir, "PalModManager_new.exe")
         if os.path.exists(new_exe):
             try:
                 os.remove(new_exe)
             except OSError:
                 pass
         shutil.copyfile(downloaded_path, new_exe)
-        # 删除临时下载文件
+        # 删除下载临时文件（本身也在系统 temp）
         try:
             os.remove(downloaded_path)
         except OSError:
@@ -307,7 +322,6 @@ def finish_pending_update() -> bool:
         return False
     try:
         current_exe = sys.executable
-        exe_dir = os.path.dirname(current_exe)
         # 原始（被替换的）exe 路径由启动参数传入，以保留用户自定义文件名
         target_exe = None
         try:
@@ -319,12 +333,13 @@ def finish_pending_update() -> bool:
         except Exception:
             target_exe = None
         if not target_exe:
-            # 兜底推导（兼容旧逻辑 / 未传路径的情况）
-            if current_exe.lower().endswith("_new.exe"):
-                target_exe = current_exe[: -len("_new.exe")] + ".exe"
-            else:
-                target_exe = os.path.join(exe_dir, "PalModManager.exe")
-        backup_exe = target_exe + ".bak"
+            # 兜底推导（兼容旧逻辑 / 未传路径的情况）。
+            # 注意：此时 current_exe 位于 temp 子目录，不能从它反推原目录，
+            # 只能回退到标准名并存于 temp（边缘情况，正常流程总会传入路径）。
+            target_exe = os.path.join(_update_temp_dir(), "PalModManager.exe")
+        # 备份放 temp（与暂存新 exe 同目录），不污染用户原目录
+        backup_exe = os.path.join(os.path.dirname(current_exe),
+                                  os.path.basename(target_exe) + ".bak")
 
         # 等待旧程序退出并释放文件句柄
         time.sleep(3)
@@ -367,12 +382,26 @@ def finish_pending_update() -> bool:
 
 
 def cleanup_update_leftovers():
-    """正常启动时清理上次更新留下的临时文件。"""
+    """正常启动时清理上次更新留下的临时文件。
+
+    主要清理系统 temp 的 PalModManagerUpdate 子目录（暂存新 exe、备份），
+    同时兼容清理旧版可能残留在原目录的中间文件。
+    """
     try:
         current_exe = sys.executable
         exe_dir = os.path.dirname(current_exe)
-        # 同时兼容：用户自定义名（<当前exe>.bak）、固定名（PalModManager.exe.bak）
-        # 以及暂存文件 PalModManager_new.exe
+
+        # 1) 清理系统 temp 子目录中的更新中间文件
+        temp_dir = _update_temp_dir()
+        if os.path.isdir(temp_dir):
+            for name in os.listdir(temp_dir):
+                if name == "PalModManager_new.exe" or name.endswith(".bak"):
+                    try:
+                        os.remove(os.path.join(temp_dir, name))
+                    except OSError:
+                        pass
+
+        # 2) 兼容旧版：原目录曾直接存放过中间文件（正常情况不会再有）
         candidates = [
             os.path.join(exe_dir, "PalModManager_new.exe"),
             current_exe + ".bak",
