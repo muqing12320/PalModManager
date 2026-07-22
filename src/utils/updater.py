@@ -80,7 +80,7 @@ def _ca_bundle() -> str:
         return ''
 
 
-CURRENT_VERSION = "1.2.8"
+CURRENT_VERSION = "1.2.9"
 UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
 
 

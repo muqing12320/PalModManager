@@ -411,19 +411,7 @@ class SettingsPage(QWidget):
             lambda state: self._config.set('confirm_before_uninstall', bool(state))
         )
         layout.addWidget(self.confirm_uninstall)
-
-        # 跳过 HTTPS 证书校验（代理 / 自签名证书网络环境）
-        self.skip_cert_verify = QCheckBox("跳过 HTTPS 证书校验（用于代理 / 自签名证书网络）")
-        self.skip_cert_verify.setToolTip(
-            "开启后更新检查与下载将不再验证服务器证书。\n"
-            "适用于校园网 / 公司代理等会拦截 HTTPS 的网络，可解决\n"
-            "“CERTIFICATE_VERIFY_FAILED”导致的更新检查失败。\n"
-            "注意：关闭校验会降低安全性，仅在必要时开启。")
-        self.skip_cert_verify.setChecked(bool(self._config.get('skip_cert_verify', False)))
-        self.skip_cert_verify.stateChanged.connect(
-            lambda state: self._apply_skip_cert_verify(bool(state)))
-        layout.addWidget(self.skip_cert_verify)
-
+        
         group.setLayout(layout)
         return group
     
@@ -435,15 +423,6 @@ class SettingsPage(QWidget):
         main_window = self.window()
         if main_window and hasattr(main_window, 'apply_theme'):
             main_window.apply_theme(theme)
-
-    def _apply_skip_cert_verify(self, enabled: bool):
-        """开启/关闭跳过证书校验：写入配置并实时应用到更新模块。"""
-        self._config.set('skip_cert_verify', enabled)
-        try:
-            from ..utils.updater import set_skip_cert_verify
-            set_skip_cert_verify(enabled)
-        except Exception:
-            pass
     
     def refresh_theme(self):
         """Update all inline styles to match the current theme."""
@@ -474,8 +453,6 @@ class SettingsPage(QWidget):
         if server_path:
             self._update_server_status(server_path)
         
-        # Update URL is built-in — no longer configurable
-    
     def _browse_game_path(self):
         """Open file dialog to select game path."""
         path = QFileDialog.getExistingDirectory(

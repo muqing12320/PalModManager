@@ -66,10 +66,6 @@ class ModManager:
             except Exception:
                 pass
     
-    def scan_collection(self, collection_path: str) -> List['ModInfo']:
-        """Scan an organized mod collection directory and return discovered mods."""
-        return self.scanner.scan_collection(collection_path)
-
     def refresh(self) -> List[ModInfo]:
         """Refresh the mod list from disk."""
         scanned = self.scanner.scan_all()
@@ -92,6 +88,82 @@ class ModManager:
         
         self._notify_change()
         return self.mods
+    
+    def check_and_repair(self) -> Tuple[int, List[str]]:
+        """Check and fix misplaced mod files automatically.
+        
+        Detects:
+        - .pak files wrongly placed in Mods/ → move to ~mods/
+        - PAK directories inside ~mods/ → flatten to individual files
+        - PAK directories inside Mods/ → move to ~mods/
+        
+        Returns (fixed_count, messages).
+        """
+        import shutil
+        fixed = 0
+        messages = []
+        mods_dir = self.scanner.mods_dir
+        paks_dir = self.scanner.paks_dir
+        
+        def _is_pak_file(f: Path) -> bool:
+            return f.suffix.lower() in ('.pak', '.ucas', '.utoc')
+        
+        # 1. Check Mods/ for stray PAK files and PAK directories
+        if mods_dir.is_dir():
+            for item in list(mods_dir.iterdir()):
+                if item.is_file() and _is_pak_file(item):
+                    dest = paks_dir / item.name
+                    if not dest.exists():
+                        paks_dir.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(item), str(dest))
+                        messages.append(f"已移动 PAK 文件: {item.name} (Mods/ -> ~mods/)")
+                        fixed += 1
+                elif item.is_dir() and item.name.lower() not in self.scanner.UE4SS_BUILTIN_MODS:
+                    # Check if this directory contains only PAK files
+                    contents = list(item.rglob('*'))
+                    pak_count = sum(1 for c in contents if c.is_file() and _is_pak_file(c))
+                    total_files = sum(1 for c in contents if c.is_file())
+                    if pak_count > 0 and pak_count == total_files:
+                        # Move the whole PAK directory to ~mods/
+                        dest_dir = paks_dir / item.name
+                        if not dest_dir.exists():
+                            shutil.move(str(item), str(dest_dir))
+                            messages.append(f"已移动 PAK 目录: {item.name}/ (Mods/ -> ~mods/)")
+                            fixed += 1
+        
+        # 2. Flatten PAK directories in ~mods/
+        if paks_dir.is_dir():
+            for item in list(paks_dir.iterdir()):
+                if item.is_dir():
+                    contents = list(item.iterdir())
+                    pak_files = [c for c in contents if c.is_file() and _is_pak_file(c)]
+                    if pak_files:
+                        for pf in pak_files:
+                            dest = paks_dir / pf.name
+                            if not dest.exists():
+                                shutil.move(str(pf), str(dest))
+                        # Remove the empty directory
+                        try:
+                            item.rmdir()
+                            messages.append(f"已展平 PAK 目录: {item.name}/ -> ~mods/")
+                            fixed += 1
+                        except OSError:
+                            pass
+        
+        # 3. Check Mods/ for .pak_disabled files and move
+        if mods_dir.is_dir():
+            for item in list(mods_dir.iterdir()):
+                if item.is_file() and item.suffix.lower() == '.pak_disabled':
+                    dest = paks_dir / item.name
+                    if not dest.exists():
+                        shutil.move(str(item), str(dest))
+                        messages.append(f"已移动禁用 PAK: {item.name} (Mods/ -> ~mods/)")
+                        fixed += 1
+        
+        if fixed > 0:
+            self.refresh()
+        
+        return fixed, messages
     
     def get_mod(self, mod_id: str) -> Optional[ModInfo]:
         """Get a specific mod by ID."""
@@ -129,7 +201,6 @@ class ModManager:
         if success:
             mod.status = ModStatus.ENABLED
             mod.last_updated = datetime.now().isoformat()
-            self._update_ue4ss_mods_txt()
             self._notify_change()
         
         return success
@@ -157,7 +228,6 @@ class ModManager:
         if success:
             mod.status = ModStatus.DISABLED
             mod.last_updated = datetime.now().isoformat()
-            self._update_ue4ss_mods_txt()
             self._notify_change()
         
         return success
@@ -217,6 +287,9 @@ class ModManager:
                     mod_path.rename(new_path)
                     mod.install_path = str(new_path)
             
+            # Update mods.txt for UE4SS
+            self._update_ue4ss_mods_txt()
+            
             return True
         except Exception:
             return False
@@ -238,6 +311,9 @@ class ModManager:
             enable_file = mod_path / "enabled.txt"
             if enable_file.exists():
                 enable_file.unlink()
+            
+            # Update mods.txt for UE4SS
+            self._update_ue4ss_mods_txt()
             
             return True
         except Exception:
@@ -1880,6 +1956,21 @@ class ModManager:
                     'display_name': entry.name,
                     'description': desc,
                 })
+            # PAK mod directory (folder with .pak+.ucas+.utoc, no Pal/ or LogicMods/ prefix)
+            # → 拆成扁平文件安装到 ~mods/，跟其他 PAK mod 一样
+            pak_files = [
+                f for f in entry.iterdir()
+                if f.suffix.lower() in ('.pak', '.ucas', '.utoc')
+            ]
+            if pak_files:
+                display = zip_stem or entry.name
+                for pf in pak_files:
+                    items.append({
+                        'type': 'pak_file',
+                        'path': pf,
+                        'display_name': display,
+                        'description': '',
+                    })
             # Lua mod directory
             else:
                 # Quick check: does it have scripts or lua files?
@@ -2003,6 +2094,27 @@ class ModManager:
             shutil.copy2(str(item['path']), str(dest))
             if display:
                 self._write_mod_metadata(str(dest), display, desc)
+            return (1, 0)
+        
+        elif item['type'] == 'pak_file':
+            # Single .pak/.ucas/.utoc file → flat copy to ~mods/
+            dest = target_paks / item['path'].name
+            if dest.exists():
+                return (0, 1)
+            shutil.copy2(str(item['path']), str(dest))
+            display = item.get('display_name')
+            if display:
+                self._write_mod_metadata(str(dest), display, item.get('description', ''))
+            return (1, 0)
+        
+        elif item['type'] == 'pak_dir':
+            dest = target_paks / item['path'].name
+            if dest.exists():
+                return (0, 1)
+            shutil.copytree(str(item['path']), str(dest))
+            display = item.get('display_name')
+            if display:
+                self._write_mod_metadata(str(dest), display, item.get('description', ''))
             return (1, 0)
         
         return (0, 1)

@@ -265,6 +265,13 @@ class MainWindow(QMainWindow):
         view_logs_action.triggered.connect(self._view_ue4ss_logs)
         tools_menu.addAction(view_logs_action)
         
+        tools_menu.addSeparator()
+        
+        repair_action = QAction("修复Mod位置", self)
+        repair_action.setToolTip("自动检查并纠正Mod文件位置（PAK错放、目录嵌套等）")
+        repair_action.triggered.connect(self._repair_mods)
+        tools_menu.addAction(repair_action)
+        
         # 帮助菜单
         help_menu = menubar.addMenu("帮助")
         
@@ -673,6 +680,29 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.status_bar.showMessage(f"扫描Mod出错: {str(e)}")
             QMessageBox.critical(self, "错误", f"扫描Mod失败:\n{str(e)}")
+    
+    def _repair_mods(self):
+        """Auto-repair: check and fix misplaced mod files."""
+        mgr = self._get_active_manager()
+        if not mgr:
+            return
+        self.status_bar.showMessage("正在检查Mod位置...")
+        QApplication.processEvents()
+        try:
+            fixed, messages = mgr.check_and_repair()
+            if fixed > 0:
+                self._refresh_mods()
+                self.status_bar.showMessage(f"修复完成: 已纠正 {fixed} 个文件")
+                QMessageBox.information(
+                    self, "修复完成",
+                    f"已纠正 {fixed} 个文件的位置:\n" + "\n".join(messages[:10])
+                )
+            else:
+                self.status_bar.showMessage("未发现问题")
+                QMessageBox.information(self, "修复", "未发现需要纠正的Mod文件位置")
+        except Exception as e:
+            self.status_bar.showMessage(f"修复失败: {e}")
+            QMessageBox.warning(self, "修复失败", str(e))
     
     def _update_framework_status_bar(self):
         """Update status bar with framework installation info."""
