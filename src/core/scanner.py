@@ -166,21 +166,17 @@ class ModScanner:
             if mod_info:
                 mods.append(mod_info)
         
-        # Now also scan for orphaned .pak_disabled (no corresponding .pak)
-        # These represent a disabled mod that we should still show
-        for item in paks_dir.iterdir():
-            if not item.is_file():
+        # Now also scan for orphaned .pak_disabled (no corresponding .pak).
+        # Keep this recursive: mod packs often place each PAK bundle in its own folder.
+        for item in paks_dir.rglob('*'):
+            if not item.is_file() or not item.name.lower().endswith('.pak_disabled'):
                 continue
-            
-            name_lower = item.name.lower()
-            if not name_lower.endswith('.pak_disabled'):
-                continue
-            
-            # The base stem of "foo.pak_disabled" is "foo" (Path.stem removes last suffix)
-            stem = item.name[:-len('.pak_disabled')]  # strip the .pak_disabled suffix
+
+            # The base stem of "foo.pak_disabled" is "foo".
+            stem = item.name[:-len('.pak_disabled')]
             if stem.lower() in seen_stems:
-                continue  # Already handled by the .pak file
-            
+                continue  # Already handled by the enabled .pak file
+
             mod_info = self._scan_pak_file(item)
             if mod_info:
                 mods.append(mod_info)
@@ -215,12 +211,9 @@ class ModScanner:
                 mod_info.mod_type = ModType.LOGIC
                 mods.append(mod_info)
         
-        # Also scan .pak_disabled variants
-        for item in logicmods_dir.iterdir():
-            if not item.is_file():
-                continue
-            name_lower = item.name.lower()
-            if not name_lower.endswith('.pak_disabled'):
+        # Also scan disabled variants in nested LogicMods folders.
+        for item in logicmods_dir.rglob('*'):
+            if not item.is_file() or not item.name.lower().endswith('.pak_disabled'):
                 continue
             stem = item.name[:-len('.pak_disabled')].lower()
             if stem in seen_stems:
@@ -437,7 +430,15 @@ class ModScanner:
     
     def _scan_pak_file(self, pak_file: Path) -> Optional[ModInfo]:
         """Scan a .pak mod file."""
-        mod_id = hashlib.md5(str(pak_file).encode()).hexdigest()[:12]
+        # A disabled PAK is the same mod with a different suffix.  Use its
+        # enabled-form path for the ID so profiles continue to work after a
+        # mod is toggled and the scanner refreshes.
+        canonical_path = str(pak_file)
+        if pak_file.name.lower().endswith('.pak_disabled'):
+            canonical_path = str(pak_file.with_name(
+                pak_file.name[:-len('_disabled')]
+            ))
+        mod_id = hashlib.md5(canonical_path.lower().encode()).hexdigest()[:12]
         
         # Check for sidecar metadata (use base stem without _P or _disabled suffixes)
         metadata = {}

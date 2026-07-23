@@ -449,6 +449,44 @@ class ModManager:
             return False
     
     # ---- Mod installation ----
+
+    @staticmethod
+    def _pak_bundle_members(pak_path: Path) -> List[Path]:
+        """Return the primary PAK and matching UE asset sidecars, if present.
+
+        Modern Unreal mods commonly ship a `.pak` together with `.ucas` and
+        `.utoc`.  Copying only the PAK makes the mod appear installed but it
+        cannot load in game.
+        """
+        if pak_path.name.lower().endswith('.pak_disabled'):
+            base_name = pak_path.name[:-len('_disabled')]
+            base_stem = Path(base_name).stem
+        else:
+            base_stem = pak_path.stem
+
+        members = [pak_path]
+        for suffix in ('.ucas', '.utoc'):
+            sidecar = pak_path.parent / f"{base_stem}{suffix}"
+            if sidecar.is_file():
+                members.append(sidecar)
+        return members
+
+    def _copy_pak_bundle(self, pak_path: Path, target_dir: Path) -> Tuple[int, int]:
+        """Copy a PAK plus sidecars. Returns `(copied, skipped)`.
+
+        Files are deliberately kept together in their existing folder when
+        importing a collection; callers may pass a nested target directory.
+        """
+        target_dir.mkdir(parents=True, exist_ok=True)
+        copied = skipped = 0
+        for source in self._pak_bundle_members(pak_path):
+            destination = target_dir / source.name
+            if destination.exists():
+                skipped += 1
+                continue
+            shutil.copy2(str(source), str(destination))
+            copied += 1
+        return copied, skipped
     
     def install_mod(self, source_path: str) -> Optional[ModInfo]:
         """Install a mod from a source path (archive or directory)."""
@@ -480,14 +518,14 @@ class ModManager:
                 root_prefix = self._find_mod_root_in_zip(files, mod_type)
                 
                 if mod_type == ModType.PAK:
-                    # For PAK: extract .pak files directly to ~mods/
+                    # For PAK: extract the complete PAK bundle directly to ~mods/.
                     extract_dir = self.scanner.paks_dir
                     extract_dir.mkdir(parents=True, exist_ok=True)
                     for f in files:
                         if f.endswith('/'):
                             continue
                         name = f.split('/')[-1]
-                        if name.lower().endswith('.pak'):
+                        if name.lower().endswith(('.pak', '.ucas', '.utoc')):
                             dest = extract_dir / name
                             with zf.open(f) as src, open(dest, 'wb') as dst:
                                 shutil.copyfileobj(src, dst)
@@ -585,8 +623,8 @@ class ModManager:
         if has_pak and not has_lua:
             target_dir = self.scanner.paks_dir
             for pak in source_dir.rglob('*.pak'):
+                self._copy_pak_bundle(pak, target_dir)
                 dest = target_dir / pak.name
-                shutil.copy2(pak, dest)
                 # Write metadata next to the pak file
                 self._write_mod_metadata(str(dest), mod_name)
         elif has_lua:
@@ -732,8 +770,8 @@ class ModManager:
             target_paks = self.scanner.paks_dir
             target_paks.mkdir(parents=True, exist_ok=True)
             for pak in paks_src.glob('*.pak'):
+                self._copy_pak_bundle(pak, target_paks)
                 dest_pak = target_paks / pak.name
-                shutil.copy2(pak, dest_pak)
                 # Write metadata for PAK file
                 self._write_mod_metadata(str(dest_pak), display_name, description)
             installed_any = True
@@ -1326,11 +1364,21 @@ class ModManager:
                 
                 # For PAK / LogicMod PAK files: delete variants and companion json
                 if mod.mod_type in (ModType.PAK, ModType.LOGIC):
-                    stem = mod_path.stem
+                    # `foo.pak_disabled` is still the foo PAK bundle.
+                    name = mod_path.name
+                    stem = (name[:-len('.pak_disabled')]
+                            if name.lower().endswith('.pak_disabled')
+                            else mod_path.stem)
                     for variant in ['.pak', '.pak_disabled']:
                         other = mod_path.parent / (stem + variant)
                         if other != mod_path and other.exists():
                             other.unlink()
+                    # UE5 IO Store mods need these alongside their PAK.  Do
+                    # not leave them behind after uninstalling the mod.
+                    for suffix in ('.ucas', '.utoc'):
+                        sidecar = mod_path.parent / (stem + suffix)
+                        if sidecar.exists():
+                            sidecar.unlink()
                     for json_name in (stem + '.json', mod_path.with_suffix('.json').name):
                         json_file = mod_path.parent / json_name
                         if json_file.exists():
@@ -1431,7 +1479,7 @@ class ModManager:
         profiles_dir = self._get_data_dir()
         profiles_dir.mkdir(parents=True, exist_ok=True)
         
-        profiles_file = profiles_dir / "profiles.json"
+        profiles_file = self._get_profiles_file()
         data = {name: p.to_dict() for name, p in self._profiles.items()}
         
         try:
@@ -1443,6 +1491,13 @@ class ModManager:
     def _load_profiles(self):
         """Load profiles from disk."""
         profiles_file = self._get_data_dir() / "profiles.json"
+
+        # Profiles used to be stored in one shared file.  Retain that file as
+        # a one-time fallback, while new saves are isolated by game/server
+        # path so switching modes cannot overwrite or apply the wrong setup.
+        scoped_file = self._get_profiles_file()
+        if scoped_file.exists():
+            profiles_file = scoped_file
         
         if profiles_file.exists():
             try:
@@ -1459,6 +1514,12 @@ class ModManager:
         data_dir = Path(os.environ.get('APPDATA', os.path.expanduser('~'))) / "帕鲁Mod管理器"
         data_dir.mkdir(parents=True, exist_ok=True)
         return data_dir
+
+    def _get_profiles_file(self) -> Path:
+        """Return a stable, path-specific profile storage file."""
+        normalized_path = os.path.normcase(os.path.abspath(str(self.game_path)))
+        path_hash = hashlib.sha256(normalized_path.encode('utf-8')).hexdigest()[:16]
+        return self._get_data_dir() / f"profiles_{path_hash}.json"
     
     # ---- Statistics and utilities ----
     
@@ -2076,7 +2137,7 @@ class ModManager:
                 if display:
                     self._write_mod_metadata(str(dest), display, desc)
                 return (0, 1)
-            shutil.copy2(str(item['path']), str(dest))
+            self._copy_pak_bundle(item['path'], target_paks)
             if display:
                 self._write_mod_metadata(str(dest), display, desc)
             return (1, 0)
@@ -2091,7 +2152,7 @@ class ModManager:
                 if display:
                     self._write_mod_metadata(str(dest), display, desc)
                 return (0, 1)
-            shutil.copy2(str(item['path']), str(dest))
+            self._copy_pak_bundle(item['path'], target_lm)
             if display:
                 self._write_mod_metadata(str(dest), display, desc)
             return (1, 0)
@@ -2101,7 +2162,7 @@ class ModManager:
             dest = target_paks / item['path'].name
             if dest.exists():
                 return (0, 1)
-            shutil.copy2(str(item['path']), str(dest))
+            self._copy_pak_bundle(item['path'], target_paks)
             display = item.get('display_name')
             if display:
                 self._write_mod_metadata(str(dest), display, item.get('description', ''))
@@ -2123,12 +2184,11 @@ class ModManager:
         """Import a single .pak file directly."""
         import shutil
         target = self.scanner.paks_dir / pak_path.name
-        target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
             return 0, 1, []
-        shutil.copy2(str(pak_path), str(target))
+        copied, skipped = self._copy_pak_bundle(pak_path, self.scanner.paks_dir)
         self.refresh()
-        return 1, 0, []
+        return copied, skipped, []
     
     def _import_raw_pak_files(self, pak_paths: List[Path]) -> Tuple[int, int, List[str]]:
         """Import a list of .pak files."""
@@ -2141,7 +2201,8 @@ class ModManager:
             if dest.exists():
                 skip += 1
             else:
-                shutil.copy2(str(p), str(dest))
-                success += 1
+                copied, skipped = self._copy_pak_bundle(p, target_paks)
+                success += copied
+                skip += skipped
         self.refresh()
         return success, skip, []
