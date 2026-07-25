@@ -501,6 +501,42 @@ class ModManager:
             return self._install_from_directory(source)
         
         return None
+
+    def preview_import(self, source_path: str) -> dict:
+        """Inspect a source without modifying the game directory.
+
+        Archives are inspected in place and folders are scanned recursively,
+        allowing the UI to show the user what will be installed first.
+        """
+        source = Path(source_path)
+        if not source.exists():
+            raise FileNotFoundError(f"导入源不存在：{source}")
+        if source.is_dir():
+            names = [str(path.relative_to(source)).replace('\\', '/')
+                     for path in source.rglob('*') if path.is_file()]
+            source_kind = '文件夹'
+        elif source.suffix.lower() == '.zip':
+            with zipfile.ZipFile(source, 'r') as archive:
+                names = [name for name in archive.namelist() if not name.endswith('/')]
+            source_kind = 'ZIP 压缩包'
+        else:
+            names = [source.name]
+            source_kind = source.suffix.lstrip('.').upper() or '文件'
+
+        lower_names = [name.lower() for name in names]
+        pak_names = [name for name in names if name.lower().endswith('.pak')]
+        existing_paks = [name for name in pak_names
+                         if (self.scanner.paks_dir / Path(name).name).exists()]
+        return {
+            'source_name': source.name,
+            'source_kind': source_kind,
+            'files': len(names),
+            'pak_files': len(pak_names),
+            'lua_files': sum(name.endswith('.lua') for name in lower_names),
+            'config_files': sum(name.endswith(('.json', '.yml', '.yaml')) for name in lower_names),
+            'io_store_files': sum(name.endswith(('.ucas', '.utoc')) for name in lower_names),
+            'existing_paks': existing_paks,
+        }
     
     def _install_from_archive(self, archive_path: Path) -> Optional[ModInfo]:
         """Install a mod from a .zip archive. Auto-detects mod type and extracts
@@ -1349,12 +1385,22 @@ class ModManager:
                     dst_dir.rename(new_path)
     
     def uninstall_mod(self, mod_id: str) -> bool:
-        """Completely remove a mod and all its associated files."""
+        """Completely remove a mod and all its associated files.
+
+        A restorable snapshot is made first.  A failed backup never blocks an
+        uninstall, but the caller can inspect ``last_backup_error`` to warn
+        the user when storage was unavailable.
+        """
         mod = self._mods.get(mod_id)
         if not mod:
             return False
         
         mod_path = Path(mod.install_path)
+        self.last_backup_error = ""
+        try:
+            self.backup_mod(mod_id)
+        except Exception as exc:
+            self.last_backup_error = str(exc)
         
         try:
             if mod_path.is_dir():
@@ -1390,6 +1436,118 @@ class ModManager:
             return True
         except Exception:
             return False
+
+    # ---- Backups and restore ----
+
+    def _get_backups_dir(self) -> Path:
+        """Return the backup location isolated to this game/server path."""
+        normalized_path = os.path.normcase(os.path.abspath(str(self.game_path)))
+        path_hash = hashlib.sha256(normalized_path.encode('utf-8')).hexdigest()[:16]
+        backup_dir = self._get_data_dir() / f"backups_{path_hash}"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        return backup_dir
+
+    def _mod_backup_members(self, mod: ModInfo) -> List[Path]:
+        """Return every managed file that must travel with a mod backup."""
+        install_path = Path(mod.install_path)
+        members = [install_path]
+        if install_path.is_file() and mod.mod_type in (ModType.PAK, ModType.LOGIC):
+            # Include disabled/enabled variants, IoStore sidecars and metadata.
+            name = install_path.name
+            stem = (name[:-len('.pak_disabled')]
+                    if name.lower().endswith('.pak_disabled') else install_path.stem)
+            for suffix in ('.pak', '.pak_disabled', '.ucas', '.utoc', '.json'):
+                candidate = install_path.parent / f"{stem}{suffix}"
+                if candidate.exists() and candidate not in members:
+                    members.append(candidate)
+        return [member for member in members if member.exists()]
+
+    def backup_mod(self, mod_id: str) -> str:
+        """Create a timestamped snapshot of one mod and return its backup ID."""
+        mod = self._mods.get(mod_id)
+        if not mod:
+            raise ValueError("Mod not found")
+
+        backup_id = datetime.now().strftime('%Y%m%d_%H%M%S_%f') + '_' + mod.id
+        backup_root = self._get_backups_dir() / backup_id
+        payload = backup_root / 'payload'
+        members = self._mod_backup_members(mod)
+        if not members:
+            raise FileNotFoundError("Mod files no longer exist")
+
+        copied_paths = []
+        try:
+            for member in members:
+                relative = member.relative_to(self.game_path)
+                destination = payload / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if member.is_dir():
+                    shutil.copytree(member, destination)
+                else:
+                    shutil.copy2(member, destination)
+                copied_paths.append(str(relative))
+
+            manifest = {
+                'backup_id': backup_id,
+                'created_at': datetime.now().isoformat(),
+                'mod': mod.to_dict(),
+                'paths': copied_paths,
+            }
+            with open(backup_root / 'manifest.json', 'w', encoding='utf-8') as handle:
+                json.dump(manifest, handle, ensure_ascii=False, indent=2)
+        except Exception:
+            shutil.rmtree(backup_root, ignore_errors=True)
+            raise
+        return backup_id
+
+    def list_backups(self, limit: int = 50) -> List[dict]:
+        """List available snapshots, newest first."""
+        result = []
+        for item in self._get_backups_dir().iterdir():
+            manifest_path = item / 'manifest.json'
+            if not manifest_path.is_file():
+                continue
+            try:
+                with open(manifest_path, 'r', encoding='utf-8') as handle:
+                    result.append(json.load(handle))
+            except (OSError, json.JSONDecodeError):
+                continue
+        result.sort(key=lambda entry: entry.get('created_at', ''), reverse=True)
+        return result[:limit]
+
+    def restore_backup(self, backup_id: str, overwrite: bool = False) -> Tuple[bool, str]:
+        """Restore a snapshot. Existing targets are protected by default."""
+        backup_root = self._get_backups_dir() / backup_id
+        manifest_path = backup_root / 'manifest.json'
+        if not manifest_path.is_file():
+            return False, '找不到备份记录。'
+        try:
+            with open(manifest_path, 'r', encoding='utf-8') as handle:
+                manifest = json.load(handle)
+            paths = manifest.get('paths', [])
+            if not paths:
+                return False, '备份中没有可恢复的文件。'
+            for relative_name in paths:
+                source = backup_root / 'payload' / relative_name
+                destination = self.game_path / relative_name
+                if not source.exists():
+                    return False, f'备份文件缺失：{relative_name}'
+                if destination.exists() and not overwrite:
+                    return False, f'目标已存在：{relative_name}'
+            for relative_name in paths:
+                source = backup_root / 'payload' / relative_name
+                destination = self.game_path / relative_name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if source.is_dir():
+                    if destination.exists():
+                        shutil.rmtree(destination)
+                    shutil.copytree(source, destination)
+                else:
+                    shutil.copy2(source, destination)
+            self.refresh()
+            return True, '备份已恢复。'
+        except (OSError, json.JSONDecodeError) as exc:
+            return False, f'恢复失败：{exc}'
     
     def _detect_mod_type_from_files(self, files: List[str]) -> ModType:
         """Detect mod type based on file list (from archive)."""

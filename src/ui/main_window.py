@@ -271,6 +271,11 @@ class MainWindow(QMainWindow):
         repair_action.setToolTip("自动检查并纠正Mod文件位置（PAK错放、目录嵌套等）")
         repair_action.triggered.connect(self._repair_mods)
         tools_menu.addAction(repair_action)
+
+        restore_backup_action = QAction("恢复最近 Mod 备份...", self)
+        restore_backup_action.setToolTip("恢复卸载前自动创建的 Mod 备份")
+        restore_backup_action.triggered.connect(self._restore_mod_backup)
+        tools_menu.addAction(restore_backup_action)
         
         # 帮助菜单
         help_menu = menubar.addMenu("帮助")
@@ -307,48 +312,48 @@ class MainWindow(QMainWindow):
     
     def _create_toolbar(self):
         """Create the toolbar."""
-        toolbar = QToolBar("主工具栏")
-        toolbar.setMovable(False)
-        toolbar.setIconSize(QSize(20, 20))
-        self.centralWidget().layout().addWidget(toolbar)
+        self.toolbar = QToolBar("主工具栏")
+        self.toolbar.setMovable(False)
+        self.toolbar.setIconSize(QSize(20, 20))
+        self.centralWidget().layout().addWidget(self.toolbar)
         
         # 客户端/服务器切换
         self.mode_switch_btn = QPushButton("客户端")
         self.mode_switch_btn.setToolTip("点击切换到服务器模式")
         self.mode_switch_btn.setStyleSheet(get_toolbar_button_style('mode'))
         self.mode_switch_btn.clicked.connect(self._toggle_mode)
-        toolbar.addWidget(self.mode_switch_btn)
+        self.toolbar.addWidget(self.mode_switch_btn)
         
-        toolbar.addSeparator()
+        self.toolbar.addSeparator()
         
         # 刷新
         refresh_btn = QPushButton("刷新")
         refresh_btn.setObjectName("refreshBtn")
         refresh_btn.clicked.connect(self._refresh_mods)
-        toolbar.addWidget(refresh_btn)
+        self.toolbar.addWidget(refresh_btn)
         
-        toolbar.addSeparator()
+        self.toolbar.addSeparator()
         
         # 安装
         # 全部启用/禁用
         enable_all_btn = QPushButton("全部启用")
         enable_all_btn.setObjectName("enableAllBtn")
         enable_all_btn.clicked.connect(self._enable_all_mods)
-        toolbar.addWidget(enable_all_btn)
+        self.toolbar.addWidget(enable_all_btn)
         
         disable_all_btn = QPushButton("全部禁用")
         disable_all_btn.setObjectName("disableAllBtn")
         disable_all_btn.clicked.connect(self._disable_all_mods)
-        toolbar.addWidget(disable_all_btn)
+        self.toolbar.addWidget(disable_all_btn)
         
-        toolbar.addSeparator()
+        self.toolbar.addSeparator()
         
         # 批量操作
         delete_selected_btn = QPushButton("删除选中")
         delete_selected_btn.setStyleSheet(get_toolbar_button_style('delete'))
         delete_selected_btn.setToolTip("删除所有选中的Mod (按住Ctrl多选)")
         delete_selected_btn.clicked.connect(self._delete_selected_mods)
-        toolbar.addWidget(delete_selected_btn)
+        self.toolbar.addWidget(delete_selected_btn)
         
         delete_all_btn = QPushButton("删除所有")
         delete_all_btn.setStyleSheet("""
@@ -365,30 +370,30 @@ class MainWindow(QMainWindow):
         """)
         delete_all_btn.setToolTip("删除所有Mod（不可恢复！）")
         delete_all_btn.clicked.connect(self._delete_all_mods)
-        toolbar.addWidget(delete_all_btn)
+        self.toolbar.addWidget(delete_all_btn)
         
-        toolbar.addSeparator()
+        self.toolbar.addSeparator()
         
         # 启动游戏
         launch_btn = QPushButton("启动游戏")
         launch_btn.setStyleSheet(get_toolbar_button_style('launch'))
         launch_btn.clicked.connect(self._launch_game)
-        toolbar.addWidget(launch_btn)
+        self.toolbar.addWidget(launch_btn)
         
-        # Spacer
+        # Spacer (保存其 action 用于插入按钮)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        toolbar.addWidget(spacer)
+        self._spacer_action = self.toolbar.addWidget(spacer)
         
         # Mode indicator
         self.mode_label = QLabel("客户端")
         self.mode_label.setStyleSheet("color: #58a6ff; padding: 0 8px; font-size: 11px; font-weight: 600;")
-        toolbar.addWidget(self.mode_label)
+        self.toolbar.addWidget(self.mode_label)
         
         # Stats
         self.stats_label = QLabel("未设置游戏路径")
         self.stats_label.setObjectName("statLabel")
-        toolbar.addWidget(self.stats_label)
+        self.toolbar.addWidget(self.stats_label)
     
     def _create_content(self):
         """Create the main content area."""
@@ -994,6 +999,47 @@ class MainWindow(QMainWindow):
             self.mod_detail_panel.set_mod(None)
             self.status_bar.showMessage(f"已卸载: {mod.name}")
     
+    def _restore_mod_backup(self):
+        """Let the user choose an automatic uninstall backup to restore."""
+        mgr = self._get_active_manager()
+        if not mgr:
+            return
+        backups = mgr.list_backups()
+        if not backups:
+            QMessageBox.information(self, "恢复备份", "当前游戏目录没有可恢复的 Mod 备份。")
+            return
+
+        from PyQt5.QtWidgets import QInputDialog
+        choices, backup_by_label = [], {}
+        for backup in backups:
+            mod = backup.get('mod', {})
+            label = f"{mod.get('name', '未知 Mod')} · {backup.get('created_at', '')}"
+            choices.append(label)
+            backup_by_label[label] = backup.get('backup_id', '')
+        selected, accepted = QInputDialog.getItem(
+            self, "恢复 Mod 备份", "选择要恢复的备份：", choices, 0, False)
+        if not accepted:
+            return
+        success, message = mgr.restore_backup(backup_by_label[selected])
+        if success:
+            self._refresh_mods()
+            QMessageBox.information(self, "恢复完成", message)
+        else:
+            QMessageBox.warning(self, "无法恢复", message + "\n\n如需覆盖现有文件，请先移除同名 Mod。")
+
+    @staticmethod
+    def _format_import_preview(preview: dict) -> str:
+        """Create a concise user-facing import summary."""
+        lines = [
+            f"来源：{preview['source_name']}（{preview['source_kind']}）",
+            f"包含 {preview['files']} 个文件：PAK {preview['pak_files']}，Lua {preview['lua_files']}，配置 {preview['config_files']}",
+        ]
+        if preview['io_store_files']:
+            lines.append(f"检测到 {preview['io_store_files']} 个 UE5 配套文件（.ucas/.utoc）。")
+        if preview['existing_paks']:
+            lines.append("以下 PAK 已存在，将跳过：" + '、'.join(preview['existing_paks'][:5]))
+        return '\n'.join(lines)
+
     def _open_mod_folder(self, mod_id: str):
         """Open the mod's folder in Explorer."""
         mgr = self._get_active_manager()
@@ -1293,6 +1339,17 @@ class MainWindow(QMainWindow):
         
         if not path:
             return
+
+        try:
+            preview = mgr.preview_import(path)
+            reply = QMessageBox.question(
+                self, "导入预览", self._format_import_preview(preview) + "\n\n确认开始导入？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if reply != QMessageBox.Yes:
+                return
+        except Exception as e:
+            QMessageBox.warning(self, "无法预览导入内容", str(e))
+            return
         
         self.status_bar.showMessage("正在导入 Mod 包...")
         try:
@@ -1417,6 +1474,23 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("已启动！")
         else:
             QMessageBox.critical(self, "错误", msg)
+    
+    def _launch_server_background(self):
+        """Launch PST server management panel (start.bat)."""
+        pst_start_bat = r"E:\Pal work\pst_v0.12.2_windows_x86_64\start.bat"
+        if not os.path.isfile(pst_start_bat):
+            QMessageBox.warning(self, "错误", f"未找到PST管理面板：\n{pst_start_bat}")
+            return
+        
+        try:
+            subprocess.Popen(
+                [pst_start_bat],
+                cwd=os.path.dirname(pst_start_bat),
+                shell=True,
+            )
+            self.status_bar.showMessage("PST服务器管理面板已启动！")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"启动PST管理面板失败：\n{str(e)}")
     
     def _open_game_dir(self):
         """Open the active game/server directory in Explorer."""
@@ -1755,11 +1829,17 @@ class MainWindow(QMainWindow):
     def _import_from_drop(self, path: str, mgr: 'ModManager'):
         """Import a mod pack from a dragged file/folder."""
         p = Path(path)
+
+        try:
+            preview = mgr.preview_import(path)
+            preview_text = self._format_import_preview(preview)
+        except Exception as e:
+            QMessageBox.warning(self, "无法预览导入内容", str(e))
+            return
         
         reply = QMessageBox.question(
             self, "确认导入",
-            f"将从此文件导入 Mod:\n{p.name}\n\n"
-            f"已存在的 Mod 将被跳过，不会覆盖。是否继续？",
+            preview_text + "\n\n已存在的 Mod 将被跳过，不会覆盖。是否继续？",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
         )
@@ -1813,6 +1893,13 @@ class MainWindow(QMainWindow):
             self.mode_switch_btn.setToolTip("点击切换到客户端模式")
             self.mode_label.setText("服务器")
             self.tab_widget.setTabText(0, "服务器Mod管理")
+            # 每次进入服务器模式都重新创建"启动服务器后台"按钮并插入
+            self.launch_server_bg_btn = QPushButton("启动服务器后台")
+            self.launch_server_bg_btn.setStyleSheet(get_toolbar_button_style('launch'))
+            self.launch_server_bg_btn.setToolTip("启动PST服务器管理面板 (start.bat)")
+            self.launch_server_bg_btn.clicked.connect(self._launch_server_background)
+            self.toolbar.insertWidget(self._spacer_action, self.launch_server_bg_btn)
+            self.launch_server_bg_btn.show()
         else:
             if not self._mod_manager:
                 QMessageBox.warning(self, "提示", "请先在设置中配置游戏客户端安装路径。")
@@ -1822,10 +1909,20 @@ class MainWindow(QMainWindow):
             self.mode_switch_btn.setToolTip("点击切换到服务器模式")
             self.mode_label.setText("客户端")
             self.tab_widget.setTabText(0, "Mod管理")
+            # 从工具栏移除"启动服务器后台"按钮并销毁
+            if hasattr(self, 'launch_server_bg_btn') and self.launch_server_bg_btn:
+                self.launch_server_bg_btn.hide()
+                self.launch_server_bg_btn.setParent(None)
+                self.launch_server_bg_btn.deleteLater()
+                self.launch_server_bg_btn = None
         
         # Re-apply mode button style and label style
         self.mode_switch_btn.setStyleSheet(get_toolbar_button_style('mode'))
         self._update_mode_label_style()
+        
+        # Force toolbar layout refresh
+        self.toolbar.adjustSize()
+        self.toolbar.update()
         
         self._refresh_mods()
         self._update_framework_status_bar()
