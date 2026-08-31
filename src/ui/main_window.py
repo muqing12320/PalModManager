@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QToolBar, QAction, QMenu, QMenuBar, QStatusBar, QTabWidget,
     QMessageBox, QFileDialog, QApplication, QLabel, QPushButton,
-    QSizePolicy,
+    QSizePolicy, QFrame,
 )
 from PyQt5.QtCore import Qt, QTimer, QSize, QThread, pyqtSignal
 from PyQt5.QtGui import QIcon, QFont
@@ -125,7 +125,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         
         self._config = AppConfig()
-        # 应用“跳过证书校验”设置（代理/自签名证书网络环境）
+        # 应用"跳过证书校验"设置（代理/自签名证书网络环境）
         try:
             from ..utils.updater import set_skip_cert_verify
             set_skip_cert_verify(bool(self._config.get('skip_cert_verify', False)))
@@ -285,111 +285,129 @@ class MainWindow(QMainWindow):
         help_menu.addAction(about_action)
         
     def _create_top_bar(self):
-        """顶部条（最上方独立一行，宽度自适应内容）：左侧放「检查更新」按钮与状态标签。
-        启动自动检查不弹窗，仅在此处显示状态；不与「启动游戏」同一行。"""
+        """顶部条: 品牌 | 模式指示 | 检查更新 | 状态信息"""
         top_bar = QWidget()
-        top_bar.setObjectName("topBar")
-        top_bar.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        top_bar.setObjectName("appTopBar")
+        top_bar.setFixedHeight(58)
+        top_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         top_layout = QHBoxLayout(top_bar)
-        top_layout.setContentsMargins(12, 6, 12, 6)
-        top_layout.setSpacing(10)
+        top_layout.setContentsMargins(22, 0, 22, 0)
+        top_layout.setSpacing(14)
 
+        # 品牌区域
+        brand_title = QLabel("PALWORLD   MOD   MANAGER")
+        brand_title.setObjectName("brandTitle")
+        top_layout.addWidget(brand_title)
+
+        brand_subtitle = QLabel("帕鲁 Mod 管理工具")
+        brand_subtitle.setObjectName("brandSubtitle")
+        top_layout.addWidget(brand_subtitle)
+
+        top_layout.addStretch(1)
+
+        # 模式指示器 Pill
+        self.mode_pill_widget = QWidget()
+        self.mode_pill_widget.setObjectName("modePillWidget")
+        self.mode_pill_widget.setFixedHeight(32)
+        pill_layout = QHBoxLayout(self.mode_pill_widget)
+        pill_layout.setContentsMargins(10, 0, 12, 0)
+        pill_layout.setSpacing(6)
+
+        self.mode_pill_dot = QLabel("●")
+        self.mode_pill_dot.setObjectName("modePillDot")
+        self.mode_pill_dot.setStyleSheet("color: #a78bfa; font-size: 12px;")
+        pill_layout.addWidget(self.mode_pill_dot)
+
+        self.mode_pill_label = QLabel("客户端")
+        self.mode_pill_label.setStyleSheet("color: #e6edf3; font-size: 12px; font-weight: 600;")
+        pill_layout.addWidget(self.mode_pill_label)
+
+        pill_arrow = QLabel("▾")
+        pill_arrow.setStyleSheet("color: #8b949e; font-size: 9px;")
+        pill_layout.addWidget(pill_arrow)
+
+        top_layout.addWidget(self.mode_pill_widget)
+
+        # 检查更新按钮
         update_btn = QPushButton("检查更新")
         update_btn.setObjectName("checkUpdateBtn")
         update_btn.setToolTip("点击手动检查更新")
         update_btn.clicked.connect(self._check_update)
-        update_btn.setStyleSheet(
-            "QPushButton { background:#21262d; color:#c9d1d9; border:1px solid #30363d;"
-            " border-radius:6px; padding:4px 14px; font-size:12px; font-weight:600; }"
-            " QPushButton:hover { background:#30363d; }")
+        update_btn.setMinimumHeight(30)
         top_layout.addWidget(update_btn)
 
         self.update_status_lbl = QLabel("")
         self.update_status_lbl.setObjectName("updateStatusLabel")
         top_layout.addWidget(self.update_status_lbl)
 
+        top_layout.addSpacing(6)
+
         self.centralWidget().layout().addWidget(top_bar)
     
     def _create_toolbar(self):
-        """Create the toolbar."""
-        self.toolbar = QToolBar("主工具栏")
+        """Create the sidebar toolbar with grouped sections."""
+        self.toolbar = QToolBar("工具栏")
         self.toolbar.setMovable(False)
+        self.toolbar.setFloatable(False)
+        self.toolbar.setOrientation(Qt.Vertical)
         self.toolbar.setIconSize(QSize(20, 20))
-        self.centralWidget().layout().addWidget(self.toolbar)
-        
-        # 客户端/服务器切换
+
+        # ---- 模式切换 ----
         self.mode_switch_btn = QPushButton("客户端")
         self.mode_switch_btn.setToolTip("点击切换到服务器模式")
         self.mode_switch_btn.setStyleSheet(get_toolbar_button_style('mode'))
         self.mode_switch_btn.clicked.connect(self._toggle_mode)
         self.toolbar.addWidget(self.mode_switch_btn)
-        
+
         self.toolbar.addSeparator()
-        
-        # 刷新
+
+        # ---- 核心操作 ----
         refresh_btn = QPushButton("刷新")
         refresh_btn.setObjectName("refreshBtn")
         refresh_btn.clicked.connect(self._refresh_mods)
         self.toolbar.addWidget(refresh_btn)
-        
+
         self.toolbar.addSeparator()
-        
-        # 安装
-        # 全部启用/禁用
+
+        # ---- Mod 批量管理 ----
         enable_all_btn = QPushButton("全部启用")
         enable_all_btn.setObjectName("enableAllBtn")
         enable_all_btn.clicked.connect(self._enable_all_mods)
         self.toolbar.addWidget(enable_all_btn)
-        
+
         disable_all_btn = QPushButton("全部禁用")
         disable_all_btn.setObjectName("disableAllBtn")
         disable_all_btn.clicked.connect(self._disable_all_mods)
         self.toolbar.addWidget(disable_all_btn)
-        
+
         self.toolbar.addSeparator()
-        
-        # 批量操作
+
+        # ---- 清理操作 ----
         delete_selected_btn = QPushButton("删除选中")
         delete_selected_btn.setStyleSheet(get_toolbar_button_style('delete'))
         delete_selected_btn.setToolTip("删除所有选中的Mod (按住Ctrl多选)")
         delete_selected_btn.clicked.connect(self._delete_selected_mods)
         self.toolbar.addWidget(delete_selected_btn)
-        
+
         delete_all_btn = QPushButton("删除所有")
-        delete_all_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #331b1b;
-                color: #f85149;
-                border: 1px solid #f8514944;
-                border-radius: 6px;
-                padding: 6px 16px;
-                font-size: 12px;
-                font-weight: 600;
-            }
-            QPushButton:hover { background-color: #442a2a; border-color: #f85149; }
-        """)
+        delete_all_btn.setStyleSheet(get_toolbar_button_style('delete'))
         delete_all_btn.setToolTip("删除所有Mod（不可恢复！）")
         delete_all_btn.clicked.connect(self._delete_all_mods)
         self.toolbar.addWidget(delete_all_btn)
-        
+
         self.toolbar.addSeparator()
-        
-        # 启动游戏
+
+        # ---- 启动控制 ----
         launch_btn = QPushButton("启动游戏")
         launch_btn.setStyleSheet(get_toolbar_button_style('launch'))
         launch_btn.clicked.connect(self._launch_game)
         self.toolbar.addWidget(launch_btn)
-        
-        # Spacer (保存其 action 用于插入按钮)
+
+        # Spacer (保存其 action 用于动态插入按钮)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self._spacer_action = self.toolbar.addWidget(spacer)
-        
-        # Mode indicator
-        self.mode_label = QLabel("客户端")
-        self.mode_label.setStyleSheet("color: #58a6ff; padding: 0 8px; font-size: 11px; font-weight: 600;")
-        self.toolbar.addWidget(self.mode_label)
-        
+
         # Stats
         self.stats_label = QLabel("未设置游戏路径")
         self.stats_label.setObjectName("statLabel")
@@ -439,9 +457,66 @@ class MainWindow(QMainWindow):
         self.settings_page.server_path_changed.connect(self._on_server_path_changed)
         self.tab_widget.addTab(self.settings_page, "设置")
         
-        # Set as central widget
+        # Left navigation rail: mode switching, navigation and all frequent
+        # actions stay within reach without stealing width from the mod list.
         layout = self.centralWidget().layout()
-        layout.addWidget(self.tab_widget)
+        workspace = QWidget()
+        workspace.setObjectName("workspace")
+        workspace_layout = QHBoxLayout(workspace)
+        workspace_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_layout.setSpacing(0)
+
+        sidebar = QFrame()
+        sidebar.setObjectName("navigationRail")
+        sidebar.setMinimumWidth(220)
+        sidebar.setMaximumWidth(260)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(14, 18, 14, 16)
+        sidebar_layout.setSpacing(8)
+
+        nav_caption = QLabel("工作区")
+        nav_caption.setObjectName("navCaption")
+        sidebar_layout.addWidget(nav_caption)
+
+        self.nav_mods_btn = QPushButton("◈  Mod 库")
+        self.nav_mods_btn.setObjectName("navButton")
+        self.nav_mods_btn.setCheckable(True)
+        self.nav_mods_btn.setChecked(True)
+        self.nav_mods_btn.clicked.connect(lambda: self._switch_page(0))
+        sidebar_layout.addWidget(self.nav_mods_btn)
+
+        self.nav_settings_btn = QPushButton("⚙  设置与框架")
+        self.nav_settings_btn.setObjectName("navButton")
+        self.nav_settings_btn.setCheckable(True)
+        self.nav_settings_btn.clicked.connect(lambda: self._switch_page(1))
+        sidebar_layout.addWidget(self.nav_settings_btn)
+
+        divider = QFrame()
+        divider.setFrameShape(QFrame.HLine)
+        sidebar_layout.addWidget(divider)
+        action_caption = QLabel("常用操作")
+        action_caption.setObjectName("navCaption")
+        sidebar_layout.addWidget(action_caption)
+
+        sidebar_layout.addWidget(self.toolbar)
+        sidebar_layout.addStretch(1)
+
+        workspace_layout.addWidget(sidebar)
+        workspace_layout.addWidget(self.tab_widget, 1)
+        layout.addWidget(workspace, 1)
+
+        self.tab_widget.tabBar().hide()
+        self.tab_widget.currentChanged.connect(self._on_page_changed)
+
+    def _switch_page(self, index: int):
+        """Switch a workspace page from the redesigned navigation rail."""
+        self.tab_widget.setCurrentIndex(index)
+
+    def _on_page_changed(self, index: int):
+        """Keep sidebar navigation state in sync with the current page."""
+        if hasattr(self, 'nav_mods_btn'):
+            self.nav_mods_btn.setChecked(index == 0)
+            self.nav_settings_btn.setChecked(index == 1)
     
     def _create_status_bar(self):
         """Create the status bar."""
@@ -492,14 +567,13 @@ class MainWindow(QMainWindow):
         
     
     def _update_mode_label_style(self):
-        """Update mode label style based on theme."""
-        if is_dark_theme():
-            color = "#58a6ff"
+        """Update mode pill style based on current mode."""
+        if self._current_mode == 'server':
+            color = "#48c9c5"  # teal for server
         else:
-            color = "#0969da"
-        self.mode_label.setStyleSheet(
-            f"color: {color}; padding: 0 8px; font-size: 11px; font-weight: 600;"
-        )
+            color = "#a78bfa"  # purple for client
+        self.mode_pill_dot.setStyleSheet(f"color: {color}; font-size: 12px;")
+        self.mode_pill_label.setText("服务器" if self._current_mode == 'server' else "客户端")
     
     def _load_game_path(self):
         """Load and initialize the game path."""
@@ -1568,7 +1642,7 @@ class MainWindow(QMainWindow):
 
     def _check_update(self, silent: bool = False):
         """检查更新：实际网络请求在后台线程 (UpdateChecker) 中进行，
-        UI 全程可响应，不会被卡住（避免“未响应”）。
+        UI 全程可响应，不会被卡住（避免"未响应"）。
 
         When silent=True (启动自动检查) no dialog is shown — only the toolbar
         status label is updated with "已是最新版本" / "有可用版本: x".
@@ -1891,7 +1965,6 @@ class MainWindow(QMainWindow):
             self._current_mode = 'server'
             self.mode_switch_btn.setText("服务器")
             self.mode_switch_btn.setToolTip("点击切换到客户端模式")
-            self.mode_label.setText("服务器")
             self.tab_widget.setTabText(0, "服务器Mod管理")
             # 每次进入服务器模式都重新创建"启动服务器后台"按钮并插入
             self.launch_server_bg_btn = QPushButton("启动服务器后台")
@@ -1907,7 +1980,6 @@ class MainWindow(QMainWindow):
             self._current_mode = 'game'
             self.mode_switch_btn.setText("客户端")
             self.mode_switch_btn.setToolTip("点击切换到服务器模式")
-            self.mode_label.setText("客户端")
             self.tab_widget.setTabText(0, "Mod管理")
             # 从工具栏移除"启动服务器后台"按钮并销毁
             if hasattr(self, 'launch_server_bg_btn') and self.launch_server_bg_btn:
@@ -1915,15 +1987,11 @@ class MainWindow(QMainWindow):
                 self.launch_server_bg_btn.setParent(None)
                 self.launch_server_bg_btn.deleteLater()
                 self.launch_server_bg_btn = None
-        
-        # Re-apply mode button style and label style
+
+        # 更新模式 Pill 样式
         self.mode_switch_btn.setStyleSheet(get_toolbar_button_style('mode'))
         self._update_mode_label_style()
-        
-        # Force toolbar layout refresh
-        self.toolbar.adjustSize()
-        self.toolbar.update()
-        
+
         self._refresh_mods()
         self._update_framework_status_bar()
     

@@ -74,39 +74,42 @@ class SettingsPage(QWidget):
     
     def _build_quick_setup_section(self) -> QGroupBox:
         """Build the one-click framework setup section."""
-        self.quick_setup_group = QGroupBox("框架快速安装")
+        self.quick_setup_group = QGroupBox("✦ 框架快速安装")
         self.quick_setup_group.setStyleSheet(get_settings_group_style('quick_setup'))
         layout = QVBoxLayout()
-        layout.setSpacing(10)
-        
-        desc = QLabel("自动检测并安装缺失的框架（UE4SS + PalSchema），配置完成后即可使用 Mod。")
+        layout.setSpacing(12)
+
+        desc = QLabel("一键检测并安装 UE4SS 与 PalSchema 双框架，配置完成后即可正常加载 Mod。")
         desc.setWordWrap(True)
-        desc.setStyleSheet("color: #8b949e; font-size: 12px; background: transparent;")
+        desc.setStyleSheet("color: #8b949e; font-size: 12px; background: transparent; font-weight: 400;")
         layout.addWidget(desc)
-        
+
         btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(8)
-        
-        self.quick_setup_btn = QPushButton("一键安装所有框架")
+        btn_layout.setSpacing(10)
+
+        self.quick_setup_btn = QPushButton("✨ 一键安装所有框架")
         self.quick_setup_btn.setObjectName("successBtn")
+        self.quick_setup_btn.setMinimumHeight(36)
         self.quick_setup_btn.clicked.connect(self._on_quick_setup)
         btn_layout.addWidget(self.quick_setup_btn)
-        
+
         self.local_setup_btn = QPushButton("从本地文件安装")
         self.local_setup_btn.setObjectName("secondaryBtn")
+        self.local_setup_btn.setMinimumHeight(36)
         self.local_setup_btn.setToolTip("使用已下载的 ZIP 压缩包安装框架")
         self.local_setup_btn.clicked.connect(self._on_local_setup)
         btn_layout.addWidget(self.local_setup_btn)
-        
+
         self.uninstall_all_btn = QPushButton("卸载所有框架")
         self.uninstall_all_btn.setObjectName("dangerBtn")
+        self.uninstall_all_btn.setMinimumHeight(36)
         self.uninstall_all_btn.setToolTip("删除 UE4SS 和 PalSchema，恢复游戏原始状态")
         self.uninstall_all_btn.clicked.connect(self._on_uninstall_all)
         btn_layout.addWidget(self.uninstall_all_btn)
-        
+
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
-        
+
         self.quick_setup_group.setLayout(layout)
         return self.quick_setup_group
     
@@ -188,11 +191,11 @@ class SettingsPage(QWidget):
         self.dev_toggle_btn.setStyleSheet("""
             QToolButton {
                 color: #8b949e;
-                font-size: 12px;
+                font-size: 13px;
                 font-weight: 600;
                 border: none;
                 background: transparent;
-                padding: 4px 0;
+                padding: 6px 0;
             }
             QToolButton:hover { color: #58a6ff; }
             QToolButton:checked { color: #58a6ff; }
@@ -308,52 +311,52 @@ class SettingsPage(QWidget):
         """Build the UE4SS configuration section."""
         group = QGroupBox("UE4SS 框架")
         layout = QVBoxLayout()
-        
-        # 状态
+        layout.setSpacing(10)
+
+        # 状态行
         status_layout = QHBoxLayout()
-        
-        self.ue4ss_status_label = QLabel("状态: 检测中...")
+        self.ue4ss_status_label = QLabel("● 检测中...")
+        self.ue4ss_status_label.setStyleSheet("color: #8b949e; font-size: 12px; font-weight: 600;")
         status_layout.addWidget(self.ue4ss_status_label)
-        
         status_layout.addStretch()
-        
+
         self.ue4ss_install_btn = QPushButton("在线安装 UE4SS")
         self.ue4ss_install_btn.setObjectName("secondaryBtn")
         self.ue4ss_install_btn.clicked.connect(self._install_ue4ss)
         status_layout.addWidget(self.ue4ss_install_btn)
-        
+
         self.ue4ss_local_btn = QPushButton("本地安装")
         self.ue4ss_local_btn.setObjectName("secondaryBtn")
         self.ue4ss_local_btn.setToolTip("从本地ZIP文件安装UE4SS")
         self.ue4ss_local_btn.clicked.connect(self._install_ue4ss_local)
         status_layout.addWidget(self.ue4ss_local_btn)
-        
+
         self.ue4ss_uninstall_btn = QPushButton("卸载 UE4SS")
         self.ue4ss_uninstall_btn.setObjectName("dangerBtn")
         self.ue4ss_uninstall_btn.clicked.connect(self._uninstall_ue4ss)
         status_layout.addWidget(self.ue4ss_uninstall_btn)
-        
+
         layout.addLayout(status_layout)
-        
+
         # 版本信息
         self.ue4ss_version_label = QLabel("")
-        self.ue4ss_version_label.setStyleSheet("color: #6c6c7e; font-size: 11px;")
+        self.ue4ss_version_label.setStyleSheet("color: #5a6478; font-size: 11px; padding-left: 4px;")
         layout.addWidget(self.ue4ss_version_label)
-        
-        # 自动配置复选框
+
+        # 自动配置
         self.ue4ss_auto_config = QCheckBox("自动为幻兽帕鲁配置UE4SS")
         self.ue4ss_auto_config.setChecked(self._config.get('ue4ss_auto_configure', True))
         self.ue4ss_auto_config.stateChanged.connect(
             lambda state: self._config.set('ue4ss_auto_configure', bool(state))
         )
         layout.addWidget(self.ue4ss_auto_config)
-        
+
         # 配置按钮
         config_btn = QPushButton("配置UE4SS设置")
         config_btn.setObjectName("secondaryBtn")
         config_btn.clicked.connect(self._configure_ue4ss)
         layout.addWidget(config_btn)
-        
+
         group.setLayout(layout)
         return group
     
@@ -361,25 +364,25 @@ class SettingsPage(QWidget):
         """Build the PalSchema configuration section."""
         group = QGroupBox("PalSchema 框架")
         layout = QVBoxLayout()
-        
+        layout.setSpacing(10)
+
         status_layout = QHBoxLayout()
-        
-        self.ps_status_label = QLabel("状态: 检测中...")
+        self.ps_status_label = QLabel("● 检测中...")
+        self.ps_status_label.setStyleSheet("color: #8b949e; font-size: 12px; font-weight: 600;")
         status_layout.addWidget(self.ps_status_label)
-        
         status_layout.addStretch()
-        
+
         self.ps_open_btn = QPushButton("打开配置文件夹")
         self.ps_open_btn.setObjectName("secondaryBtn")
         self.ps_open_btn.clicked.connect(self._open_palschema_folder)
         status_layout.addWidget(self.ps_open_btn)
-        
+
         layout.addLayout(status_layout)
-        
+
         self.ps_version_label = QLabel("")
-        self.ps_version_label.setStyleSheet("color: #6c6c7e; font-size: 11px;")
+        self.ps_version_label.setStyleSheet("color: #5a6478; font-size: 11px; padding-left: 4px;")
         layout.addWidget(self.ps_version_label)
-        
+
         group.setLayout(layout)
         return group
     
@@ -429,16 +432,22 @@ class SettingsPage(QWidget):
         # Update quick setup group style
         if hasattr(self, 'quick_setup_group'):
             self.quick_setup_group.setStyleSheet(get_settings_group_style('quick_setup'))
-        
-        # Refresh framework status labels
+
+        # Refresh game path status
         game_path = self._config.get('game_path', '')
         if game_path:
+            self._update_game_status(game_path)
             self._update_framework_status(game_path)
-        
-        # Refresh server framework status
+
+        # Refresh server path status
         server_path = self._config.get('server_path', '')
         if server_path:
-            self._update_server_framework_status(server_path)
+            self._update_server_status(server_path)
+
+        # Update mode label style
+        main_window = self.window()
+        if main_window and hasattr(main_window, '_update_mode_label_style'):
+            main_window._update_mode_label_style()
     
     def _load_settings(self):
         """Load current settings into UI."""
@@ -519,40 +528,43 @@ class SettingsPage(QWidget):
     
     def _update_server_status(self, path: str):
         """Update the server path status indicator."""
+        dark = is_dark_theme()
+        green = "#3fb950" if dark else "#1a7f37"
+        red = "#f85149" if dark else "#cf222e"
+
         if is_valid_palserver_path(path):
-            self.server_status_label.setText("有效的 PalServer 安装")
-            self.server_status_label.setStyleSheet("color: #1a7f37; font-size: 12px; padding: 4px 0;")
+            self.server_status_label.setText("● 有效的 PalServer 安装")
+            self.server_status_label.setStyleSheet(f"color: {green}; font-size: 12px; padding: 4px 0; font-weight: 600;")
             self._update_server_framework_status(path)
         else:
-            self.server_status_label.setText("无效或未找到")
-            self.server_status_label.setStyleSheet("color: #cf222e; font-size: 12px; padding: 4px 0;")
+            self.server_status_label.setText("● 无效或未找到")
+            self.server_status_label.setStyleSheet(f"color: {red}; font-size: 12px; padding: 4px 0; font-weight: 600;")
             self.server_framework_label.setText("")
     
     def _update_server_framework_status(self, path: str):
-        """Update server framework status display."""
+        """Update server framework status display with colored dots."""
+        dark = is_dark_theme()
+        green = "#3fb950" if dark else "#1a7f37"
+        yellow = "#d29922" if dark else "#9a6700"
+
         ue4ss = UE4SSService(path)
         ps = PalSchemaService(path)
-        
+
         ue4ss_ok = ue4ss.is_installed()
         ps_ok = ps.is_installed()
-        
+
         parts = []
         if ue4ss_ok:
-            parts.append("UE4SS 已安装")
+            parts.append(f'<span style="color:{green};">● UE4SS 已安装</span>')
         else:
-            parts.append("UE4SS 未安装")
-        
+            parts.append(f'<span style="color:{yellow};">● UE4SS 未安装</span>')
         if ps_ok:
-            parts.append("PalSchema 已安装")
+            parts.append(f'<span style="color:{green};">● PalSchema 已安装</span>')
         else:
-            parts.append("PalSchema 未安装")
-        
-        self.server_framework_label.setText(" · ".join(parts))
-        
-        if ue4ss_ok and ps_ok:
-            self.server_framework_label.setStyleSheet("color: #1a7f37; font-size: 11px;")
-        else:
-            self.server_framework_label.setStyleSheet("color: #9a6700; font-size: 11px;")
+            parts.append(f'<span style="color:{yellow};">● PalSchema 未安装</span>')
+
+        self.server_framework_label.setText("   ".join(parts))
+        self.server_framework_label.setStyleSheet("font-size: 11px;")
     
     def _on_server_setup(self):
         """Install frameworks to server directory."""
@@ -719,50 +731,66 @@ class SettingsPage(QWidget):
     
     def _update_game_status(self, path: str):
         """Update the game path status indicator."""
+        dark = is_dark_theme()
+        green = "#3fb950" if dark else "#1a7f37"
+        red = "#f85149" if dark else "#cf222e"
+
         if is_valid_palworld_path(path):
-            self.game_status_label.setText("有效的幻兽帕鲁安装")
-            self.game_status_label.setStyleSheet("color: #1a7f37; font-size: 12px; padding: 4px 0;")
-            
+            self.game_status_label.setText("● 有效的幻兽帕鲁安装")
+            self.game_status_label.setStyleSheet(f"color: {green}; font-size: 12px; padding: 4px 0; font-weight: 600;")
             version = get_game_version(path)
             if version:
                 self.game_info_label.setText(f"版本: {version}")
             else:
                 self.game_info_label.setText("")
         else:
-            self.game_status_label.setText("无效或未找到")
-            self.game_status_label.setStyleSheet("color: #cf222e; font-size: 12px; padding: 4px 0;")
+            self.game_status_label.setText("● 无效或未找到")
+            self.game_status_label.setStyleSheet(f"color: {red}; font-size: 12px; padding: 4px 0; font-weight: 600;")
             self.game_info_label.setText("")
     
     def _update_framework_status(self, path: str):
-        """Update UE4SS and PalSchema status indicators."""
+        """Update UE4SS and PalSchema status indicators with colored dots."""
+        dark = is_dark_theme()
+        green = "#3fb950" if dark else "#1a7f37"
+        red = "#f85149" if dark else "#cf222e"
+        yellow = "#d29922" if dark else "#9a6700"
+        muted = "#5a6478" if dark else "#8b949e"
+        secondary = "#8b949e" if dark else "#656d76"
+
         if not is_valid_palworld_path(path):
-            self.ue4ss_status_label.setText("状态: 游戏路径未设置")
-            self.ps_status_label.setText("状态: 游戏路径未设置")
+            self.ue4ss_status_label.setText("● 游戏路径未设置")
+            self.ue4ss_status_label.setStyleSheet(f"color: {red}; font-size: 12px; font-weight: 600;")
+            self.ps_status_label.setText("● 游戏路径未设置")
+            self.ps_status_label.setStyleSheet(f"color: {red}; font-size: 12px; font-weight: 600;")
             return
-        
+
         # UE4SS
         ue4ss = UE4SSService(path)
         if ue4ss.is_installed():
             version = ue4ss.get_version()
-            self.ue4ss_status_label.setText("状态: 已安装")
-            self.ue4ss_status_label.setStyleSheet("color: #1a7f37;")
+            self.ue4ss_status_label.setText("● 已安装")
+            self.ue4ss_status_label.setStyleSheet(f"color: {green}; font-size: 12px; font-weight: 600;")
             self.ue4ss_version_label.setText(f"版本: {version or '未知'}")
+            self.ue4ss_version_label.setStyleSheet(f"color: {secondary}; font-size: 11px; padding-left: 4px;")
         else:
-            self.ue4ss_status_label.setText("状态: 未安装")
-            self.ue4ss_status_label.setStyleSheet("color: #cf222e;")
-            self.ue4ss_version_label.setText("UE4SS是Lua和LogicMod必需的框架")
-        
+            self.ue4ss_status_label.setText("● 未安装")
+            self.ue4ss_status_label.setStyleSheet(f"color: {yellow}; font-size: 12px; font-weight: 600;")
+            self.ue4ss_version_label.setText("UE4SS 是 Lua 和 LogicMod 必需的框架")
+            self.ue4ss_version_label.setStyleSheet(f"color: {muted}; font-size: 11px; padding-left: 4px;")
+
         # PalSchema
         ps = PalSchemaService(path)
         if ps.is_installed():
             version = ps.get_version()
-            self.ps_status_label.setText("状态: 已安装")
-            self.ps_status_label.setStyleSheet("color: #1a7f37;")
+            self.ps_status_label.setText("● 已安装")
+            self.ps_status_label.setStyleSheet(f"color: {green}; font-size: 12px; font-weight: 600;")
             self.ps_version_label.setText(f"版本: {version or '未知'}")
+            self.ps_version_label.setStyleSheet(f"color: {secondary}; font-size: 11px; padding-left: 4px;")
         else:
-            self.ps_status_label.setText("状态: 未安装")
-            self.ps_status_label.setStyleSheet("color: #cf222e;")
-            self.ps_version_label.setText("PalSchema是配置类Mod必需的框架")
+            self.ps_status_label.setText("● 未安装")
+            self.ps_status_label.setStyleSheet(f"color: {yellow}; font-size: 12px; font-weight: 600;")
+            self.ps_version_label.setText("PalSchema 是配置类 Mod 必需的框架")
+            self.ps_version_label.setStyleSheet(f"color: {muted}; font-size: 11px; padding-left: 4px;")
     
     def _install_ue4ss(self):
         """Install UE4SS online."""
