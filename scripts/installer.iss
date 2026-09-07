@@ -1,6 +1,6 @@
 #define MyAppName "PalModManager"
 #define MyAppNameCN "帕鲁Mod管理器"
-#define MyAppVersion "1.3.1"
+#define MyAppVersion "1.3.2"
 #define MyAppPublisher "muqing12320"
 #define MyAppExeName "PalModManager.WinUI.exe"
 #define MyAppIcon "..\PalModManager.WinUI\PalModManager.WinUI\Assets\AppIcon.ico"
