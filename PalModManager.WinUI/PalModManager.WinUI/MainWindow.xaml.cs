@@ -167,6 +167,13 @@ public sealed partial class MainWindow : Window
                 return;
             }
 
+            if (!IsLikelyInstaller(downloadedPath))
+            {
+                UpdateStatusText.Text = "下载文件无效";
+                await ShowMessageAsync("下载更新", $"下载到的文件不是有效的安装程序，已停止安装。\n\n文件位置：{downloadedPath}");
+                return;
+            }
+
             UpdateStatusText.Text = $"正在安装 {info.Version}...";
             try
             {
@@ -203,23 +210,21 @@ public sealed partial class MainWindow : Window
         await dialog.ShowAsync();
     }
 
-    private static void RevealInExplorer(string path)
+    private static bool IsLikelyInstaller(string path)
     {
-        if (!File.Exists(path))
-        {
-            return;
-        }
-
         try
         {
-            Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"")
+            if (new FileInfo(path).Length < 1024 * 1024)
             {
-                UseShellExecute = true,
-            });
+                return false;
+            }
+
+            using var stream = File.OpenRead(path);
+            return stream.ReadByte() == 'M' && stream.ReadByte() == 'Z';
         }
         catch (System.Exception)
         {
-            // Explorer failing to open is not worth interrupting the update flow.
+            return false;
         }
     }
 }

@@ -31,6 +31,10 @@ Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.i
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
+[InstallDelete]
+; src\ui held the old PyQt5 interface; it no longer ships, so clear it out on upgrade
+Type: filesandordirs; Name: "{app}\src\ui"
+
 [Files]
 Source: "..\build\winui\app\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "*.pdb,__pycache__\*"
 
@@ -59,8 +63,6 @@ Type: files; Name: "{app}\src\services\__pycache__\*"
 Type: dirifempty; Name: "{app}\src\services\__pycache__"
 Type: files; Name: "{app}\src\utils\__pycache__\*"
 Type: dirifempty; Name: "{app}\src\utils\__pycache__"
-Type: files; Name: "{app}\src\ui\__pycache__\*"
-Type: dirifempty; Name: "{app}\src\ui\__pycache__"
 ; Temp update leftovers
 Type: files; Name: "{tmp}\PalModManagerUpdate\*"
 Type: dirifempty; Name: "{tmp}\PalModManagerUpdate"

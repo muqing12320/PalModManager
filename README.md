@@ -20,12 +20,10 @@ pal-mod-manager/
 │   ├── installer.iss        # Inno Setup 安装脚本
 │   ├── install_inno.ps1     # 安装 Inno Setup
 │   └── download_cn_lang.ps1 # 下载简体中文语言文件（Inno Setup 不自带）
-├── main.py                  # 旧版 PyQt5 界面入口（仅开发用，不参与发布）
 ├── version.json             # 版本信息（被程序读取以检查更新）
 ├── resources/               # 应用图标、框架压缩包（UE4SS / PalSchema）
 ├── src/
 │   ├── backend/             # Flask API 层（供 WinUI 前端调用）
-│   ├── ui/                  # 旧版 PyQt5 界面（仅开发用，不参与发布）
 │   ├── core/            # 业务逻辑
 │   │   ├── manager.py       # ModManager：刷新 / 导入 / 导出 / 合集扫描
 │   │   ├── scanner.py       # Mod 扫描与智能识别（含 scan_collection）
@@ -103,12 +101,12 @@ pal-mod-manager/
 
 1. **检查**：`check_for_update()` 读取仓库 `main` 分支上的 `version.json`，比较 `version` 与 `CURRENT_VERSION`。
 2. **下载**：前端调 `/api/update/download-stream`；后端重新读一次 `version.json` 取出 `download_url`（指向 `PalModManager-Setup.exe`）后下载。
-3. **安装**：`MainWindow.xaml.cs` 下载完成后直接以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS` 拉起安装包，随后 `Application.Current.Exit()` 退出释放文件锁。
+3. **安装**：`MainWindow.xaml.cs` 下载完成后先用 `IsLikelyInstaller()` 校验文件（`MZ` 头 + 体积 > 1MB），再以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS` 拉起安装包，随后 `Application.Current.Exit()` 退出释放文件锁。
 4. **重启**：`installer.iss` 的 `[Run]` 段不带 `skipifsilent`，因此静默安装结束时会自动启动新版本。
 
 > 配置与 Mod 数据放在 `%APPDATA%\帕鲁Mod管理器\`，安装过程只替换安装目录，不会动用户数据。
 >
-> 校验：安装包下载后检查 `MZ` 头且体积大于 1MB，避免把 HTML 错误页当成 exe 执行。
+> 校验：`IsLikelyInstaller()` 检查 `MZ` 头且体积大于 1MB，避免把 HTML 错误页当成 exe 执行。
 
 ### 相关函数（`src/utils/updater.py`）
 
@@ -116,8 +114,7 @@ pal-mod-manager/
 | --- | --- |
 | `check_for_update(url)` | 读取 `version.json`，返回 `(info, error)` |
 | `download_update(url, progress, cancel_check, method_cb)` | 下载新版本安装包（分片 + 镜像回退 + 断点续传） |
-| `apply_update(downloaded_path)` | 静默拉起安装包（旧版 PyQt5 界面路径用；WinUI 流程由 C# 侧完成） |
-| `cleanup_update_leftovers()` | 正常启动时清理残留临时文件 |
+| `_update_temp_dir()` | 更新中间文件的存放目录（`<TEMP>/PalModManagerUpdate/`） |
 
 ## 本地测试更新
 
@@ -201,6 +198,6 @@ python -m src.backend.api_server --port 5000
 - **已验证（2026-09-08，.NET SDK 8.0.424）**：Debug 与 Release 自包含发布均 0 错误 0 警告；实际启动确认后端随进程拉起、Mod 列表与统计行加载、静默检查更新返回「已是最新版本」、顶栏切换到服务器模式后列表/标题/启动按钮随之改变，关闭窗口后后端看门狗正常退出。
 - 在 Visual Studio 2022 中打开 `.sln` 需要额外安装「.NET 桌面开发」组件（本机 VS 只装了 MSBuild，没有 .NET SDK，命令行用 `dotnet build` 即可）。
 - **客户端/服务器模式切换**：顶栏「客户端 / 服务器」药丸按钮切换当前管理的安装目录（未配置对应路径时拒绝切换并提示去设置）。模式存在 `BackendClient.Mode`，所有端点的 `mode` 参数默认取该值，因此 Mod 列表、启用/禁用、导入导出、修复、启动、框架安装、Mod 方案都会跟着切换；方案本身按安装目录哈希分别存储，两种模式互不可见。
-- **合集扫描未实现**：`ModManager` / `ModScanner` 没有扫描任意合集目录的能力（PyQt 版同一条路径会抛 `AttributeError`），因此 `/api/collection/scan` 明确返回 501，前端提示改用「导入」。
-- **未移植「启动服务器后台」按钮**：PyQt 版该按钮硬编码启动个人机器上的 `E:\Pal work\pst_v0.12.2_windows_x86_64\start.bat`，且当前项目内并不存在这个路径，不适合作为通用功能进入新前端。
-- **自更新的安装动作在 C# 侧**：升级由 `MainWindow.xaml.cs` 直接静默拉起安装包完成。后端刻意不暴露 `/api/update/apply`：`updater.apply_update()` 用 `sys.executable` 推导安装目录，在「C# 前端 + Python 后端」结构下那是 `python.exe` 的目录，据此安装会写错位置。该函数只保留给旧版 PyQt5 界面路径。
+- **合集扫描未实现**：`ModManager` / `ModScanner` 没有扫描任意合集目录的能力，因此 `/api/collection/scan` 明确返回 501，前端提示改用「导入」。
+- **未移植「启动服务器后台」按钮**：旧 PyQt5 版该按钮硬编码启动个人机器上的 `E:\Pal work\pst_v0.12.2_windows_x86_64\start.bat`，且当前项目内并不存在这个路径，不适合作为通用功能进入新前端。
+- **自更新的安装动作只在 C# 侧**：升级由 `MainWindow.xaml.cs` 校验并静默拉起安装包完成。后端不提供 `/api/update/apply`：Python 后端跑在系统 `python.exe` 上，无法从自身推导应用安装目录，因此旧的 `updater.apply_update()` 已随 PyQt5 界面一起删除。

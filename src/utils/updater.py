@@ -8,8 +8,6 @@ import json
 import tempfile
 import os
 import sys
-import subprocess
-import shutil
 import time
 import threading
 import traceback
@@ -589,78 +587,6 @@ def _update_temp_dir() -> str:
     except OSError:
         pass
     return d
-
-
-def _clean_env():
-    """复制一份环境变量并清除 PyInstaller 的 _MEIPASS，避免子进程复用父进程的临时目录。"""
-    env = os.environ.copy()
-    env.pop("_MEIPASS", None)
-    env.pop("_MEIPASS2", None)
-    return env
-
-
-def _launch_detached(exe_path: str, args=None, env=None):
-    """以脱离父进程的方式启动一个 exe，父进程退出也不会牵连它。"""
-    flags = 0
-    for f in ("DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
-        flags |= getattr(subprocess, f, 0)
-    cmd = [exe_path] + list(args or [])
-    return subprocess.Popen(
-        cmd,
-        creationflags=flags,
-        close_fds=True,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env=env if env is not None else _clean_env(),
-    )
-
-
-def apply_update(downloaded_path: str) -> bool:
-    """应用更新：启动 Inno Setup 安装包静默安装，然后退出当前应用。
-
-    安装包会替换所有文件并重新启动应用（由 installer.iss [Run] 段控制）。
-    """
-    if not os.path.isfile(downloaded_path):
-        return False
-
-    try:
-        with open(downloaded_path, "rb") as fh:
-            head = fh.read(2)
-        if head != b"MZ" or os.path.getsize(downloaded_path) < 1024 * 1024:
-            return False
-    except Exception:
-        return False
-
-    try:
-        install_dir = os.path.dirname(sys.executable)
-        args = [
-            "/VERYSILENT",
-            "/SUPPRESSMSGBOXES",
-            "/NORESTART",
-            "/CLOSEAPPLICATIONS",
-            f"/DIR={install_dir}",
-        ]
-        _launch_detached(downloaded_path, args=args)
-        return True
-    except Exception:
-        return False
-
-
-def cleanup_update_leftovers():
-    """正常启动时清理上次更新留下的临时文件。"""
-    try:
-        temp_dir = _update_temp_dir()
-        if os.path.isdir(temp_dir):
-            for name in os.listdir(temp_dir):
-                p = os.path.join(temp_dir, name)
-                if os.path.isfile(p):
-                    try:
-                        os.remove(p)
-                    except OSError:
-                        pass
-    except Exception:
-        pass
 
 
 def _version_le(a: str, b: str) -> bool:

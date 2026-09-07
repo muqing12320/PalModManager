@@ -33,6 +33,8 @@ dotnet publish "PalModManager.WinUI\PalModManager.WinUI\PalModManager.WinUI.cspr
 if errorlevel 1 goto :fail
 
 echo [3/3] Copying backend files...
+if exist "build\winui\app\src" rd /s /q "build\winui\app\src"
+if exist "build\winui\app\resources" rd /s /q "build\winui\app\resources"
 xcopy /E /I /Y "src" "build\winui\app\src" >nul
 if errorlevel 1 goto :fail
 xcopy /E /I /Y "resources" "build\winui\app\resources" >nul
