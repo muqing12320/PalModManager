@@ -358,9 +358,9 @@ def restore_backup(backup_id):
 
 @api.route("/update/check", methods=["GET"])
 def check_update():
-    from ..utils.updater import CURRENT_VERSION, UPDATE_URL, check_for_update
+    from ..utils.updater import CURRENT_VERSION, check_for_update
     try:
-        info, err = check_for_update(UPDATE_URL)
+        info, err = check_for_update()
         if err:
             return jsonify({"error": err}), 500
         # An empty "update" means already on the newest version.
@@ -374,7 +374,7 @@ def check_update():
 
 @api.route("/update/download-stream", methods=["GET"])
 def download_update_stream():
-    from ..utils.updater import download_update, UPDATE_URL, check_for_update
+    from ..utils.updater import download_update, check_for_update
 
     def generate():
         q = queue.Queue()
@@ -387,16 +387,12 @@ def download_update_stream():
 
         def _worker():
             try:
-                info, err = check_for_update(UPDATE_URL)
+                info, err = check_for_update()
                 if err or not info:
                     q.put(("error", err or "未找到可用更新"))
                     return
-                dl_url = info.get("download_url", "")
-                if not dl_url:
-                    q.put(("error", "更新信息中缺少下载地址"))
-                    return
                 saved = download_update(
-                    dl_url,
+                    info["download_url"],
                     progress=_progress,
                     cancel_check=lambda: False,
                     method_cb=_method_cb,

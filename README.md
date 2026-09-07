@@ -20,7 +20,7 @@ pal-mod-manager/
 │   ├── installer.iss        # Inno Setup 安装脚本
 │   ├── install_inno.ps1     # 安装 Inno Setup
 │   └── download_cn_lang.ps1 # 下载简体中文语言文件（Inno Setup 不自带）
-├── version.json             # 版本信息（被程序读取以检查更新）
+├── version.json             # 旧版更新源（仅供切换前发布的旧客户端用，新版不再读）
 ├── resources/               # 应用图标、框架压缩包（UE4SS / PalSchema）
 ├── src/
 │   ├── backend/             # Flask API 层（供 WinUI 前端调用）
@@ -82,8 +82,10 @@ pal-mod-manager/
 ### 版本检查
 
 - `updater.CURRENT_VERSION`：当前程序版本号（位于 `src/utils/updater.py` 顶部，由 `scripts\build_winui.bat` 自动写入）。
-- 程序启动后读取 `version.json`（`UPDATE_URL`，即仓库 `main` 分支上的文件）。
-- 通过 `_version_le()` 归一化比较（去掉 `v` 前缀、忽略非数字部分）。若远端版本号更高，则提示更新。
+- 检查更新直接请求 GitHub Releases API 的 `releases/latest`（`LATEST_RELEASE_URL`），**不再读取手工维护的 `version.json`**，因此不会出现「release 已发布但 feed 还是旧版本号 → 提示已是最新」这类问题。
+- 版本号取 `tag_name`，经 `_normalize_tag()` 去掉开头的 `v` / `v.`，再用 `_version_le()` 归一化比较。
+- 下载地址取该 release 中名为 `PalModManager-Setup.exe` 的 asset 的 `browser_download_url`；**找不到该 asset 就不提示更新**，从根上排除「提示有更新却下到 404」。更新说明取 release 的 `body`。
+- 代价：GitHub 匿名 API 限流 60 次/小时/IP（同一共享出口会互相消耗），触发时提示「更新检查过于频繁，请一小时后再试」。
 
 ### 下载安装包
 
@@ -99,8 +101,8 @@ pal-mod-manager/
 
 发版只发布 Inno Setup 安装包，自更新不再做原地文件替换：
 
-1. **检查**：`check_for_update()` 读取仓库 `main` 分支上的 `version.json`，比较 `version` 与 `CURRENT_VERSION`。
-2. **下载**：前端调 `/api/update/download-stream`；后端重新读一次 `version.json` 取出 `download_url`（指向 `PalModManager-Setup.exe`）后下载。
+1. **检查**：`check_for_update()` 查 `releases/latest`，比较 `tag_name` 与 `CURRENT_VERSION`。
+2. **下载**：前端调 `/api/update/download-stream`；后端再查一次 releases API 拿到安装包 asset 的下载地址后下载。
 3. **安装**：`MainWindow.xaml.cs` 下载完成后先用 `IsLikelyInstaller()` 校验文件（`MZ` 头 + 体积 > 1MB），再以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS` 拉起安装包，随后 `Application.Current.Exit()` 退出释放文件锁。
 4. **重启**：`installer.iss` 的 `[Run]` 段不带 `skipifsilent`，因此静默安装结束时会自动启动新版本。
 
@@ -112,19 +114,24 @@ pal-mod-manager/
 
 | 函数 | 作用 |
 | --- | --- |
-| `check_for_update(url)` | 读取 `version.json`，返回 `(info, error)` |
+| `check_for_update()` | 查 `releases/latest`，返回 `({version, download_url, notes}, error)` |
 | `download_update(url, progress, cancel_check, method_cb)` | 下载新版本安装包（分片 + 镜像回退 + 断点续传） |
+| `_normalize_tag(tag)` | release tag → 版本号（去掉开头的 `v` / `v.`） |
 | `_update_temp_dir()` | 更新中间文件的存放目录（`<TEMP>/PalModManagerUpdate/`） |
 
-## 本地测试更新
+## 发版与更新测试
 
-1. 用较低版本号构建并安装一个旧版本：
-   ```powershell
-   scripts\build_winui.bat        # 输入一个较低的版本号，如 1.2.12
-   build\installer\PalModManager-Setup.exe
-   ```
-2. 用新版本号重新构建，把新的 `build\installer\PalModManager-Setup.exe` 上传到对应的 GitHub Release，并把仓库里的 `version.json` 的 `version` 与 `download_url` 更新到该版本后推送。
-3. 运行旧版本 → 检查更新 → 下载安装包 → 应自动静默安装并重新以新版本打开。
+发版步骤（当前客户端）：
+
+1. `scripts\build_winui.bat`，输入新版本号 → 产出 `build\installer\PalModManager-Setup.exe`。
+2. 在 GitHub 建 tag `v<版本号>` 的 Release，上传该安装包，**asset 名必须保持 `PalModManager-Setup.exe`**（检查逻辑按这个名字取下载地址，名字不对就等于不推送更新）。
+3. 提交构建脚本改过版本号的 `updater.py` 与 `installer.iss`。
+
+不再需要改 `version.json`。`releases/latest` 会忽略 draft 与 prerelease，所以把 Release 存成草稿即是「暂不推送」，发布即生效。相比之前走 `raw.githubusercontent.com` 的 `version.json`（边缘缓存约 5 分钟，发完要等一阵才看得到），API 这条路径基本是即时的。
+
+本地验证「有可用更新」：检查源是全局的 `releases/latest`，所以只能真实发一个更高的版本才能触发；本地改 `CURRENT_VERSION` 只会让结果偏向「已是最新」。建议流程：装一个较低版本的安装包 → 发一个更高版本 → 在旧版上点检查更新 → 应自动下载安装并静默升级后重启。
+
+> `version.json` 仅供本次改动之前发布的客户端使用，那些版本仍会读它。等确认没有用户停留在旧版本后即可删除；在此之前若要发新版，仍顺手把它更新到新版本号，否则老用户收不到更新提示。
 
 ### 测试 Mod 合集扫描
 

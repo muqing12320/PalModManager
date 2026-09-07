@@ -79,7 +79,8 @@ def _ca_bundle() -> str:
 
 
 CURRENT_VERSION = "1.3.2"
-UPDATE_URL = "https://raw.githubusercontent.com/muqing12320/PalModManager/main/version.json"
+LATEST_RELEASE_URL = "https://api.github.com/repos/muqing12320/PalModManager/releases/latest"
+INSTALLER_ASSET = "PalModManager-Setup.exe"
 
 
 def _build_session(retries: int = 6, verify: Optional[str] = None) -> requests.Session:
@@ -87,8 +88,7 @@ def _build_session(retries: int = 6, verify: Optional[str] = None) -> requests.S
 
     * urllib3 重试适配器自动重试失败的连接与 5xx 响应（指数退避）；
     * 跟随 GitHub Release 的 302 重定向（GET 重定向会保留 Range 头）；
-    * 默认使用打包/ certifi 的 CA 证书包做正规校验；verify 可强制指定
-      （如 False 表示不校验），详见 check_for_update 的降级逻辑。
+    * verify 可为证书包路径或 False（不校验），默认取决于 _NO_VERIFY。
     """
     global _NO_VERIFY
     if verify is None:
@@ -131,17 +131,24 @@ def _log_check_error(msg: str) -> None:
         pass
 
 
-def check_for_update(url: str = UPDATE_URL) -> tuple:
-    """检查更新。
+def check_for_update() -> tuple:
+    """检查更新：直接查 GitHub Releases API，以最新正式版为准。
 
-    使用与 Mod 下载相同的 urllib + CERT_NONE 通道（network.fetch_json），
-    彻底绕开 requests / certifi 证书包在代理 / 自签名证书网络下的不稳定，
-    保证更新检查稳定可用。
+    不再依赖手工维护的 version.json，避免出现「release 已发布但 feed 仍是旧版本号」
+    而提示已是最新。版本号取自 tag_name（容忍 v / v. 前缀），下载地址取自安装包
+    asset，因此不可能给出一个指向不存在文件的地址。
+
+    使用与 Mod 下载相同的 urllib + CERT_NONE 通道（network.fetch_json），绕开
+    requests / certifi 证书包在代理 / 自签名证书网络下的不稳定。
     """
     try:
-        ok, data, err = fetch_json(url, timeout=30)
+        ok, data, err = fetch_json(LATEST_RELEASE_URL, timeout=30)
         if not ok:
-            msg = f"更新检查失败：{err}"
+            if "403" in err:
+                # GitHub 匿名 API 限流：60 次/小时/IP，共享出口时容易触发
+                msg = "更新检查过于频繁，请一小时后再试"
+            else:
+                msg = f"更新检查失败：{err}"
             _log_check_error(msg)
             _dbg("check_for_update 失败:\n" + msg)
             return None, msg
@@ -153,13 +160,33 @@ def check_for_update(url: str = UPDATE_URL) -> tuple:
 
     if not isinstance(data, dict):
         return None, "更新服务器返回数据格式异常"
-    remote = data.get('version', '')
+
+    remote = _normalize_tag(data.get("tag_name", ""))
     if not remote:
-        return None, "No version field"
-    # 仅透出必要字段
+        return None, "更新服务器未提供版本号"
     if _version_le(remote, CURRENT_VERSION):
         return {}, ""
-    return data, ""
+
+    dl_url = ""
+    for asset in data.get("assets") or []:
+        if (asset.get("name") or "").strip() == INSTALLER_ASSET:
+            dl_url = (asset.get("browser_download_url") or "").strip()
+            break
+    if not dl_url:
+        msg = f"新版本 {remote} 缺少安装包 {INSTALLER_ASSET}，暂不提示更新"
+        _log_check_error(msg)
+        return None, msg
+
+    notes = (data.get("body") or "").strip() or f"新版本 {remote}"
+    return {"version": remote, "download_url": dl_url, "notes": notes}, ""
+
+
+def _normalize_tag(tag: str) -> str:
+    """把 release tag 归一化成版本号：去掉开头的 v / V / 点号。"""
+    tag = (tag or "").strip()
+    while tag[:1] in ("v", "V", "."):
+        tag = tag[1:]
+    return tag
 
 
 def _probe_total(dl_url: str, sess: requests.Session, timeout) -> int:
