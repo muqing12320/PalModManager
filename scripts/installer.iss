@@ -15,7 +15,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppNameCN}
 DisableProgramGroupPage=yes
 OutputDir=..\build\installer
-OutputBaseFilename=PalModManager-{#MyAppVersion}-Setup
+OutputBaseFilename=PalModManager-Setup
 SetupIconFile={#MyAppIcon}
 Compression=lzma2/max
 SolidCompression=yes
@@ -39,7 +39,7 @@ Name: "{group}\{#MyAppNameCN}"; Filename: "{app}\{#MyAppExeName}"; IconFilename:
 Name: "{autodesktop}\{#MyAppNameCN}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; IconFilename: "{app}\{#MyAppExeName}"
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppNameCN}}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppNameCN}}"; Flags: nowait postinstall
 
 [UninstallDelete]
 ; AppData - config, profiles, backups

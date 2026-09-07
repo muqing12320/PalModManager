@@ -1,31 +1,31 @@
 # PalModManager（帕鲁 Mod 管理器）
 
-> 当前版本：**v1.2.0**
+> 当前版本：**v1.2.12**
 
 Palworld 的 Mod 管理器，支持 UE4SS Lua Mod 与 PAK Mod 的启用/禁用、状态同步，以及程序自身的**自动更新**。
 
-- 技术栈：Python 3 + PyQt5 + PyInstaller（`--onefile --windowed`）
-- 入口：`main.py`
-- 打包：`build.bat <版本号>`（自动生成 `version.json`、构建、提交并打 Git tag、打开发布页）
-- 当前版本号：`src/utils/updater.py` 的 `CURRENT_VERSION`（v1.2.0）
+- 技术栈：C# WinUI 3 前端（`PalModManager.WinUI/`）+ Python Flask 后端（`src/backend/`），前端通过本地 HTTP 调用后端
+- 入口：`PalModManager.WinUI/PalModManager.WinUI/MainWindow.xaml.cs`（负责拉起 `src.backend.api_server` 作为后端进程）
+- 打包：`scripts\build_winui.bat`（提示输入版本号 → dotnet publish → 复制后端 → 调 Inno Setup 出安装包）
+- 安装包产物：`build\installer\PalModManager-Setup.exe`
+- 当前版本号：`src/utils/updater.py` 的 `CURRENT_VERSION`（构建脚本会自动写入）
 
 ## 目录结构
 
 ```
 pal-mod-manager/
-├── main.py              # 程序入口
-├── build.bat            # 打包/发布脚本
-├── PalModManager.spec   # PyInstaller 配置
-├── version.json         # 版本信息（被程序读取以检查更新）
-├── resources/           # 应用图标、框架压缩包（UE4SS / PalSchema）
+├── PalModManager.WinUI/     # C# WinUI 3 前端
+├── scripts/
+│   ├── build_winui.bat      # 构建前端 + 生成安装包
+│   ├── installer.iss        # Inno Setup 安装脚本
+│   ├── install_inno.ps1     # 安装 Inno Setup
+│   └── download_cn_lang.ps1 # 下载简体中文语言文件（Inno Setup 不自带）
+├── main.py                  # 旧版 PyQt5 界面入口（仅开发用，不参与发布）
+├── version.json             # 版本信息（被程序读取以检查更新）
+├── resources/               # 应用图标、框架压缩包（UE4SS / PalSchema）
 ├── src/
-│   ├── ui/              # 界面
-│   │   ├── main_window.py   # 主窗口（菜单 / 列表 / 详情 / 更新下载）
-│   │   ├── mod_list.py      # Mod 列表控件
-│   │   ├── mod_detail.py    # Mod 详情面板
-│   │   ├── settings_page.py # 设置页（路径、模式、框架）
-│   │   ├── profile_dialog.py# 配置方案（客户端/服务器）管理
-│   │   └── styles.py        # 样式
+│   ├── backend/             # Flask API 层（供 WinUI 前端调用）
+│   ├── ui/                  # 旧版 PyQt5 界面（仅开发用，不参与发布）
 │   ├── core/            # 业务逻辑
 │   │   ├── manager.py       # ModManager：刷新 / 导入 / 导出 / 合集扫描
 │   │   ├── scanner.py       # Mod 扫描与智能识别（含 scan_collection）
@@ -39,7 +39,6 @@ pal-mod-manager/
 │       ├── config.py    # 配置读写
 │       ├── network.py   # 网络请求
 │       └── helpers.py   # 工具函数
-└── dist/                # 打包产物 PalModManager.exe
 ```
 
 ## 功能特性
@@ -80,48 +79,55 @@ pal-mod-manager/
 
 ## 自更新机制
 
-更新流程的关键是**彻底避开“从 .bat / VBS 脚本里启动新 EXE”**这一在 Windows 上不稳定的环节，改为由程序自身用 `subprocess` 拉起另一个进程完成替换。
+发版只发布 Inno Setup 安装包，自更新不再做原地文件替换：下载 `PalModManager-Setup.exe` → 静默运行 → 由安装包负责替换文件并重启应用。这样避开了在 Windows 上手工换文件所遇到的文件锁、权限与残留问题。
 
 ### 版本检查
 
-- `updater.CURRENT_VERSION`：当前程序版本号（v1.2.0，位于 `src/utils/updater.py` 顶部）。
+- `updater.CURRENT_VERSION`：当前程序版本号（位于 `src/utils/updater.py` 顶部，由 `scripts\build_winui.bat` 自动写入）。
 - 程序启动后读取 `version.json`（`UPDATE_URL`，即仓库 `main` 分支上的文件）。
 - 通过 `_version_le()` 归一化比较（去掉 `v` 前缀、忽略非数字部分）。若远端版本号更高，则提示更新。
 
-### 双进程替换流程（核心）
+### 下载安装包
 
-1. **下载**：`download_update()` 采用 **稳定下载方式**——基于 `requests` 的单连接下载，内置自动重试（指数退避、覆盖 5xx/CDN 限流）、断点续传（连接中断从已下载位置继续）与 GitHub 302 重定向跟随，下载完成校验文件大小。
-2. **暂存**：`apply_update()` 把下载好的新 EXE 复制为系统 temp（`<TEMP>/PalModManagerUpdate/`）下的 `PalModManager_new.exe`，然后用 **`subprocess.Popen`（脱离父进程 + 清掉 `_MEIPASS` 环境变量）** 直接拉起它，并传入 `--apply-update` 与当前 EXE 路径参数。随后当前程序立即 `os._exit(0)` 退出、释放文件锁。**用户原目录此刻不写入任何中间文件。**
-3. **替换**：新进程（`PalModManager_new.exe`，位于 temp）启动时，`main.py` 最开头调用 `finish_pending_update()` 检测到 `--apply-update`，执行：
-   - 等待约 3 秒，确保旧程序已退出并释放文件句柄；
-   - 把旧 `PalModManager.exe` 改名备份到 temp 同目录（如 `PalModManager.exe.bak`，**不污染用户原目录**）；
-   - 把 temp 下的 `PalModManager_new.exe` 复制为最终的 `PalModManager.exe`（带重试）；
-   - 再用 `subprocess` 拉起最终的 `PalModManager.exe`；
-   - 当前 `_new.exe` 进程 `os._exit(0)` 退出。
-4. **最终启动**：最终 `PalModManager.exe` 正常运行；`cleanup_update_leftovers()` 在启动时清理系统 temp 中残留的 `PalModManager_new.exe` 与 `*.bak`。
+`download_update()` 优先追速度、逐级降级：
 
-> 设计要点：所有“启动另一个 EXE”的动作都在 Python 进程内通过 `subprocess` 完成（与管理器启动游戏是同一套可靠机制），不依赖 `cmd start` / `wscript` / `powershell Start-Process` 等脚本方式。
+1. **urllib 多线程分片**：把文件切成每段约 4MB 的 Range 区间并行下载。在按连接限速的代理网络下多连接可叠加带宽（实测 4~8 倍提速）。优先走 `ghproxy.net` 镜像，失败回退直连。
+2. **urllib 单连接**：自动重试，保证进度持续推进。
+3. **requests 单连接**：极端情况兜底。
+
+每一段都带断点续传与重试，下载完成后校验文件总大小。全程通过 SSE（`/api/update/download-stream`）向前端回报进度。
+
+### 安装包静默升级流程（核心）
+
+发版只发布 Inno Setup 安装包，自更新不再做原地文件替换：
+
+1. **检查**：`check_for_update()` 读取仓库 `main` 分支上的 `version.json`，比较 `version` 与 `CURRENT_VERSION`。
+2. **下载**：前端调 `/api/update/download-stream`；后端重新读一次 `version.json` 取出 `download_url`（指向 `PalModManager-Setup.exe`）后下载。
+3. **安装**：`MainWindow.xaml.cs` 下载完成后直接以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS` 拉起安装包，随后 `Application.Current.Exit()` 退出释放文件锁。
+4. **重启**：`installer.iss` 的 `[Run]` 段不带 `skipifsilent`，因此静默安装结束时会自动启动新版本。
+
+> 配置与 Mod 数据放在 `%APPDATA%\帕鲁Mod管理器\`，安装过程只替换安装目录，不会动用户数据。
+>
+> 校验：安装包下载后检查 `MZ` 头且体积大于 1MB，避免把 HTML 错误页当成 exe 执行。
 
 ### 相关函数（`src/utils/updater.py`）
 
 | 函数 | 作用 |
 | --- | --- |
 | `check_for_update(url)` | 读取 `version.json`，返回 `(info, error)` |
-| `download_update(url, progress, mirror)` | 下载新版本（含镜像回退） |
-| `apply_update(downloaded_path)` | 暂存新 EXE 并拉起更新进程 |
-| `finish_pending_update()` | 以 `--apply-update` 启动时完成文件替换 |
+| `download_update(url, progress, cancel_check, method_cb)` | 下载新版本安装包（分片 + 镜像回退 + 断点续传） |
+| `apply_update(downloaded_path)` | 静默拉起安装包（旧版 PyQt5 界面路径用；WinUI 流程由 C# 侧完成） |
 | `cleanup_update_leftovers()` | 正常启动时清理残留临时文件 |
 
 ## 本地测试更新
 
-1. 构建测试运行版（版本号低于待发布版），放入测试目录：
+1. 用较低版本号构建并安装一个旧版本：
    ```powershell
-   # 临时把 CURRENT_VERSION 改低，然后：
-   .\venv\Scripts\python.exe -m PyInstaller PalModManager.spec --noconfirm
-   Copy-Item dist\PalModManager.exe -Destination "<测试目录>\PalModManager.exe" -Force
+   scripts\build_winui.bat        # 输入一个较低的版本号，如 1.2.12
+   build\installer\PalModManager-Setup.exe
    ```
-2. `build.bat <新版本号>` 出正式版，把 `dist\PalModManager.exe` 上传到对应 GitHub Release。
-3. 运行测试目录的程序 → 检查更新 → 应自动关闭并重新以新版本打开。
+2. 用新版本号重新构建，把新的 `build\installer\PalModManager-Setup.exe` 上传到对应的 GitHub Release，并把仓库里的 `version.json` 的 `version` 与 `download_url` 更新到该版本后推送。
+3. 运行旧版本 → 检查更新 → 下载安装包 → 应自动静默安装并重新以新版本打开。
 
 ### 测试 Mod 合集扫描
 
@@ -197,4 +203,4 @@ python -m src.backend.api_server --port 5000
 - **客户端/服务器模式切换**：顶栏「客户端 / 服务器」药丸按钮切换当前管理的安装目录（未配置对应路径时拒绝切换并提示去设置）。模式存在 `BackendClient.Mode`，所有端点的 `mode` 参数默认取该值，因此 Mod 列表、启用/禁用、导入导出、修复、启动、框架安装、Mod 方案都会跟着切换；方案本身按安装目录哈希分别存储，两种模式互不可见。
 - **合集扫描未实现**：`ModManager` / `ModScanner` 没有扫描任意合集目录的能力（PyQt 版同一条路径会抛 `AttributeError`），因此 `/api/collection/scan` 明确返回 501，前端提示改用「导入」。
 - **未移植「启动服务器后台」按钮**：PyQt 版该按钮硬编码启动个人机器上的 `E:\Pal work\pst_v0.12.2_windows_x86_64\start.bat`，且当前项目内并不存在这个路径，不适合作为通用功能进入新前端。
-- **不提供原地自更新**：`updater.apply_update()` 替换的是 `sys.executable`，在「C# 前端 + Python 后端」结构下那是 `python.exe`，暴露该端点会覆盖用户的 Python 安装；且 releases 中的产物是 PyQt 单文件 exe，与该前端并非同一程序。故后端仅开放检查与下载，`/api/update/apply` 已移除。若要真正的自动更新，需要先让 WinUI 版发布独立产物（单文件 exe 或 MSIX），并在 C# 侧实现替换逻辑。
+- **自更新的安装动作在 C# 侧**：升级由 `MainWindow.xaml.cs` 直接静默拉起安装包完成。后端刻意不暴露 `/api/update/apply`：`updater.apply_update()` 用 `sys.executable` 推导安装目录，在「C# 前端 + Python 后端」结构下那是 `python.exe` 的目录，据此安装会写错位置。该函数只保留给旧版 PyQt5 界面路径。

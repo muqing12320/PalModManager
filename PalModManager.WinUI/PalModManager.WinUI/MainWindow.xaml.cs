@@ -167,18 +167,21 @@ public sealed partial class MainWindow : Window
                 return;
             }
 
-            UpdateStatusText.Text = $"新版本已下载 ({info.Version})";
-            var done = new ContentDialog
+            UpdateStatusText.Text = $"正在安装 {info.Version}...";
+            try
             {
-                XamlRoot = DialogRoot,
-                Title = "下载完成",
-                Content = $"新版本已下载到:\n{downloadedPath}\n\n双击运行该文件即可完成更新。",
-                PrimaryButtonText = "打开所在文件夹",
-                CloseButtonText = "稍后",
-            };
-            if (await done.ShowAsync() == ContentDialogResult.Primary)
+                var psi = new System.Diagnostics.ProcessStartInfo(downloadedPath,
+                    "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS")
+                {
+                    UseShellExecute = true
+                };
+                System.Diagnostics.Process.Start(psi);
+                Microsoft.UI.Xaml.Application.Current.Exit();
+            }
+            catch (System.Exception ex)
             {
-                RevealInExplorer(downloadedPath);
+                UpdateStatusText.Text = "安装启动失败";
+                await ShowMessageAsync("安装更新", $"无法启动安装程序。\n\n原因：{ex.Message}\n\n文件位置：{downloadedPath}");
             }
         }
         finally

@@ -14,7 +14,7 @@ from PyQt5.QtGui import QFont
 
 from src.ui.main_window import MainWindow
 from src.utils.config import AppConfig
-from src.utils.updater import finish_pending_update, cleanup_update_leftovers
+from src.utils.updater import cleanup_update_leftovers
 
 import traceback
 
@@ -44,10 +44,6 @@ sys.excepthook = _global_excepthook
 
 def main():
     """Main entry point."""
-    # 自更新流程：若以 --apply-update 启动，这里会完成文件替换并退出
-    if finish_pending_update():
-        return
-
     # 清理上次更新可能残留的临时文件
     cleanup_update_leftovers()
 

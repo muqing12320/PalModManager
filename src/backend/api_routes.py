@@ -374,7 +374,7 @@ def check_update():
 
 @api.route("/update/download-stream", methods=["GET"])
 def download_update_stream():
-    from ..utils.updater import download_update, UPDATE_URL
+    from ..utils.updater import download_update, UPDATE_URL, check_for_update
 
     def generate():
         q = queue.Queue()
@@ -387,8 +387,16 @@ def download_update_stream():
 
         def _worker():
             try:
+                info, err = check_for_update(UPDATE_URL)
+                if err or not info:
+                    q.put(("error", err or "未找到可用更新"))
+                    return
+                dl_url = info.get("download_url", "")
+                if not dl_url:
+                    q.put(("error", "更新信息中缺少下载地址"))
+                    return
                 saved = download_update(
-                    UPDATE_URL,
+                    dl_url,
                     progress=_progress,
                     cancel_check=lambda: False,
                     method_cb=_method_cb,

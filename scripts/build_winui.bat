@@ -7,6 +7,17 @@ setlocal enabledelayedexpansion
 set ROOT=%~dp0..
 cd /d "%ROOT%"
 
+:: Read current version from updater.py as default
+for /f "tokens=2 delims== " %%v in ('findstr /b "CURRENT_VERSION" src\utils\updater.py') do set DEFAULT_VER=%%~v
+set /p APP_VERSION="Enter version [%DEFAULT_VER%]: "
+if "%APP_VERSION%"=="" set APP_VERSION=%DEFAULT_VER%
+
+:: Update version in source files
+set PAL_VER=%APP_VERSION%
+powershell -NoProfile -Command "$v=$env:PAL_VER; $q=[char]34; $e=New-Object Text.UTF8Encoding $false; $p=(Resolve-Path 'src\utils\updater.py').Path; $c=[IO.File]::ReadAllText($p); $c=$c -replace 'CURRENT_VERSION\s*=\s*.*', ('CURRENT_VERSION = '+$q+$v+$q); [IO.File]::WriteAllText($p,$c,$e)"
+powershell -NoProfile -Command "$v=$env:PAL_VER; $q=[char]34; $e=New-Object Text.UTF8Encoding $false; $p=(Resolve-Path 'scripts\installer.iss').Path; $c=[IO.File]::ReadAllText($p); $c=$c -replace '(?m)^#define MyAppVersion\s+.*', ('#define MyAppVersion '+$q+$v+$q); [IO.File]::WriteAllText($p,$c,$e)"
+echo Version set to %APP_VERSION%
+
 cmd /c "tasklist /FI ""IMAGENAME eq PalModManager.WinUI.exe"" 2>nul | find /I ""PalModManager.WinUI.exe""" >nul 2>&1
 if not errorlevel 1 (
     echo [0/3] Closing running instance...
@@ -29,26 +40,29 @@ if errorlevel 1 goto :fail
 
 echo Done. Output: %ROOT%\build\winui\app
 
-set ISCC=
-where iscc >nul 2>&1 && set ISCC=iscc
-if "%ISCC%"=="" if exist "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" set ISCC="%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
-if "%ISCC%"=="" if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" set ISCC="C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-if "%ISCC%"=="" if exist "C:\Program Files\Inno Setup 6\ISCC.exe" set ISCC="C:\Program Files\Inno Setup 6\ISCC.exe"
+set "ISCC="
+where iscc >nul 2>&1 && set "ISCC=iscc"
+if not defined ISCC if exist "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
+if not defined ISCC if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+if not defined ISCC if exist "C:\Program Files\Inno Setup 6\ISCC.exe" set "ISCC=C:\Program Files\Inno Setup 6\ISCC.exe"
 
-if defined ISCC (
-    echo [4/4] Generating installer...
-    %ISCC% "scripts\installer.iss"
-    if errorlevel 1 goto :fail
-    echo Installer output: %ROOT%\build\installer
-) else (
-    echo [Skip] Inno Setup not found, skipping installer generation.
-    echo        Install from https://jrsoftware.org/isdl.php then re-run this script.
-)
+if not defined ISCC goto :skip_installer
+echo [4/4] Generating installer...
+"%ISCC%" "scripts\installer.iss"
+if errorlevel 1 goto :fail
+echo Installer output: %ROOT%\build\installer
+goto :end
 
+:skip_installer
+echo [Skip] Inno Setup not found, skipping installer generation.
+echo        Install from https://jrsoftware.org/isdl.php then re-run this script.
+
+:end
 endlocal
 exit /b 0
 
 :fail
 echo Build failed.
+pause
 endlocal
 exit /b 1
