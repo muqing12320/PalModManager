@@ -128,3 +128,73 @@ pal-mod-manager/
 1. 运行程序 → 文件 → 扫描 Mod 合集目录 → 选择整理好的合集目录（如 `幻兽帕鲁Mod合集`）。
 2. 主列表应出现所有 Mod（带「合集」标签），且说明正确显示（如 mod 同级/上一级的 `使用说明.txt`）。
 3. 点击「是」可将合集 Mod 一键导入到当前游戏/服务器目录。
+
+---
+
+## WinUI 3 重构（实验性）
+
+正在新增基于 C# + WinUI 3 的新界面，保留 Python 后端作为本地 API，以获得更原生的 Windows 观感。
+
+### 新工程结构
+
+```
+PalModManager.WinUI/                 # C# WinUI 3 前端
+├── PalModManager.WinUI.sln
+├── PalModManager.WinUI/
+│   ├── App.xaml(.cs)                # 启动后端、应用主题、静默检查更新
+│   ├── MainWindow.xaml(.cs)         # 顶栏 + NavigationView + 更新流程
+│   ├── Views/                       # ModsPage（含 ModsViewModel）/ SettingsPage / ProfileDialog
+│   ├── Controls/BusyDialog.cs       # 长任务进度弹窗（支持百分比进度）
+│   ├── Services/                    # BackendClient（HTTP）/ BackendProcessService（子进程生命周期）
+│   └── Themes/ThemeResources.xaml   # 明暗配色与卡片、标题样式
+└── PalModManager.Core/              # C# 共享模型（ModInfo / AppConfigDto）
+src/backend/                         # Python HTTP API 包装层
+├── api_server.py                    # 入口：随机端口 + 父进程退出看门狗
+├── api_routes.py                    # /api/* 端点，复用 src/core 的既有逻辑
+└── app_state.py                     # 配置与 ModManager 实例缓存
+```
+
+### 已实现功能（WinUI 版）
+
+- Mod 列表：加载、刷新、搜索、按类型/状态筛选、顶部统计（总数/启用/禁用/冲突）。
+- 单个启用/禁用、全部启用/全部禁用、卸载（带二次确认，返回备份失败提示）。
+- 导入 Mod、导出 Mod 合集（返回数量与错误明细）、修复文件结构、启动游戏/服务器。
+- 顶栏客户端 ⇄ 服务器模式切换，列表、方案、框架、启动等操作随之切换目标目录。
+- Mod 方案（Profile）：列表 / 新建 / 删除 / 加载。
+- 设置：游戏与服务器路径（浏览 + 自动检测）、框架状态展示与一键安装、客户端↔服务器同步、深浅主题（写入配置并即时应用）。
+- 更新：检查新版本 → 确认 → SSE 流式下载（显示百分比）→ 打开下载位置。
+- 长任务统一使用进度弹窗，错误统一通过 InfoBar 展示后端返回的中文原因。
+
+### 构建 WinUI 3 版本
+
+要求：
+- .NET 8 SDK（Windows App SDK 通过 NuGet 包引入，编译不需要 Visual Studio 工作负载）
+- 运行需要 Windows App Runtime 1.6；`scripts\build_winui.bat` 的自包含发布产物不依赖它
+- Python 3.x（已安装 `requirements.txt` 依赖，含 flask）
+
+运行：
+
+```bat
+scripts\build_winui.bat
+```
+
+输出目录：`build\winui\app`
+
+### 后端 API
+
+启动后端（开发调试）：
+
+```bat
+python -m src.backend.api_server --port 5000
+```
+
+前端默认连接 `http://127.0.0.1:5000`。
+
+### 已知限制
+
+- **已验证（2026-09-08，.NET SDK 8.0.424）**：Debug 与 Release 自包含发布均 0 错误 0 警告；实际启动确认后端随进程拉起、Mod 列表与统计行加载、静默检查更新返回「已是最新版本」、顶栏切换到服务器模式后列表/标题/启动按钮随之改变，关闭窗口后后端看门狗正常退出。
+- 在 Visual Studio 2022 中打开 `.sln` 需要额外安装「.NET 桌面开发」组件（本机 VS 只装了 MSBuild，没有 .NET SDK，命令行用 `dotnet build` 即可）。
+- **客户端/服务器模式切换**：顶栏「客户端 / 服务器」药丸按钮切换当前管理的安装目录（未配置对应路径时拒绝切换并提示去设置）。模式存在 `BackendClient.Mode`，所有端点的 `mode` 参数默认取该值，因此 Mod 列表、启用/禁用、导入导出、修复、启动、框架安装、Mod 方案都会跟着切换；方案本身按安装目录哈希分别存储，两种模式互不可见。
+- **合集扫描未实现**：`ModManager` / `ModScanner` 没有扫描任意合集目录的能力（PyQt 版同一条路径会抛 `AttributeError`），因此 `/api/collection/scan` 明确返回 501，前端提示改用「导入」。
+- **未移植「启动服务器后台」按钮**：PyQt 版该按钮硬编码启动个人机器上的 `E:\Pal work\pst_v0.12.2_windows_x86_64\start.bat`，且当前项目内并不存在这个路径，不适合作为通用功能进入新前端。
+- **不提供原地自更新**：`updater.apply_update()` 替换的是 `sys.executable`，在「C# 前端 + Python 后端」结构下那是 `python.exe`，暴露该端点会覆盖用户的 Python 安装；且 releases 中的产物是 PyQt 单文件 exe，与该前端并非同一程序。故后端仅开放检查与下载，`/api/update/apply` 已移除。若要真正的自动更新，需要先让 WinUI 版发布独立产物（单文件 exe 或 MSIX），并在 C# 侧实现替换逻辑。

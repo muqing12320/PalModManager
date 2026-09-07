@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ContentDialog
+    x:Class="PalModManager.WinUI.Views.ProfileDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Mod 方案管理"
+    PrimaryButtonText="加载选中"
+    CloseButtonText="关闭"
+    DefaultButton="Primary"
+    PrimaryButtonClick="PrimaryButtonClickHandler">
+
+    <StackPanel Spacing="12" MinWidth="400">
+        <TextBlock
+            x:Name="ScopeText"
+            Text="方案用于保存并快速切换不同的 Mod 启用组合。"
+            FontSize="12"
+            Opacity="0.7"
+            TextWrapping="Wrap" />
+        <ListView
+            x:Name="ProfilesList"
+            Height="180"
+            SelectionChanged="ProfilesList_SelectionChanged" />
+        <TextBlock
+            x:Name="StatusText"
+            FontSize="12"
+            TextWrapping="Wrap"
+            Visibility="Collapsed" />
+        <TextBox x:Name="NewNameBox" Header="新方案名称" PlaceholderText="方案名称..." />
+        <TextBox
+            x:Name="NewDescBox"
+            Header="描述（可选）"
+            AcceptsReturn="True"
+            MaxHeight="72"
+            TextWrapping="Wrap" />
+        <StackPanel Orientation="Horizontal" Spacing="12">
+            <Button x:Name="CreateButton" Content="保存当前配置为方案" Click="CreateButton_Click" />
+            <Button x:Name="DeleteButton" Content="删除选中" Click="DeleteButton_Click" IsEnabled="False" />
+        </StackPanel>
+    </StackPanel>
+</ContentDialog>
