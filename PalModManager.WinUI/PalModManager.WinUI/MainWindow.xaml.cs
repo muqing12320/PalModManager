@@ -135,7 +135,7 @@ public sealed partial class MainWindow : Window
             {
                 XamlRoot = DialogRoot,
                 Title = "发现新版本",
-                Content = $"发现新版本: {info.Version}\n当前版本: {result.CurrentVersion}{notes}\n\n是否现在下载？",
+                Content = $"发现新版本: {info.Version}\n当前版本: {result.CurrentVersion}{notes}\n\n是否现在下载？\n更新后应用会自动关闭并重启。",
                 PrimaryButtonText = "下载",
                 CloseButtonText = "取消",
                 DefaultButton = ContentDialogButton.Primary,
@@ -150,7 +150,7 @@ public sealed partial class MainWindow : Window
             {
                 downloadedPath = await BusyDialog.RunWithProgressAsync<string?>(
                     DialogRoot,
-                    $"正在下载新版本 {info.Version}...",
+                    $"正在下载新版本 {info.Version}...\n更新后应用会自动关闭并重启。",
                     progress => App.ApiClient.DownloadUpdateWithProgressAsync(progress));
             }
             catch (System.Exception ex)
@@ -174,7 +174,7 @@ public sealed partial class MainWindow : Window
                 return;
             }
 
-            UpdateStatusText.Text = $"正在安装 {info.Version}...";
+            UpdateStatusText.Text = $"正在安装 {info.Version}... 完成后自动重启";
             try
             {
                 var psi = new System.Diagnostics.ProcessStartInfo(downloadedPath,

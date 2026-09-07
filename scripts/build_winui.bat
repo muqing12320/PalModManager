@@ -4,7 +4,7 @@ setlocal enabledelayedexpansion
 :: Build PalModManager WinUI 3 frontend + backend
 :: Requirements: .NET 8 SDK, Python 3.x with requirements.txt installed
 
-set ROOT=%~dp0..
+for %%A in ("%~dp0..") do set "ROOT=%%~fA"
 cd /d "%ROOT%"
 
 :: Read current version from updater.py as default
@@ -53,6 +53,17 @@ echo [4/4] Generating installer...
 "%ISCC%" "scripts\installer.iss"
 if errorlevel 1 goto :fail
 echo Installer output: %ROOT%\build\installer
+
+echo.
+echo ===== Release v%APP_VERSION% =====
+echo  asset name (must match exactly): PalModManager-Setup.exe
+echo  file: %ROOT%\build\installer\PalModManager-Setup.exe
+echo  sha256:
+certutil -hashfile "build\installer\PalModManager-Setup.exe" SHA256 | findstr /v /i "CertUtil SHA256"
+echo  Upload the asset BEFORE clicking Publish Release.
+echo  Tag must be exactly v%APP_VERSION% - a tag that does not match the version
+echo  baked into the installer makes clients prompt for the same update forever.
+start "" "https://github.com/muqing12320/PalModManager/releases/new?tag=v%APP_VERSION%&title=v%APP_VERSION%"
 goto :end
 
 :skip_installer

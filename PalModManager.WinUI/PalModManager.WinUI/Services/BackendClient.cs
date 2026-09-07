@@ -11,6 +11,11 @@ using PalModManager.Core.Models;
 
 namespace PalModManager.WinUI.Services;
 
+public readonly record struct ByteProgress(long Done, long Total)
+{
+    public double Ratio => Total > 0 ? Math.Clamp((double)Done / Total, 0d, 1d) : 0d;
+}
+
 public class BackendClient
 {
     private readonly HttpClient _http;
@@ -341,7 +346,7 @@ public class BackendClient
         }
     }
 
-    public async Task<string?> DownloadUpdateWithProgressAsync(IProgress<double>? progress = null)
+    public async Task<string?> DownloadUpdateWithProgressAsync(IProgress<ByteProgress>? progress = null)
     {
         using var streamingClient = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         var request = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}/api/update/download-stream");
@@ -371,12 +376,9 @@ public class BackendClient
             switch (root.GetProperty("type").GetString())
             {
                 case "progress":
-                    var done = root.GetProperty("done").GetInt64();
-                    var total = root.GetProperty("total").GetInt64();
-                    if (total > 0)
-                    {
-                        progress?.Report((double)done / total);
-                    }
+                    progress?.Report(new ByteProgress(
+                        root.GetProperty("done").GetInt64(),
+                        root.GetProperty("total").GetInt64()));
                     break;
                 case "done":
                     return root.GetProperty("path").GetString();

@@ -78,7 +78,7 @@ def _ca_bundle() -> str:
         return ''
 
 
-CURRENT_VERSION = "1.3.2"
+CURRENT_VERSION = "1.4.0"
 LATEST_RELEASE_URL = "https://api.github.com/repos/muqing12320/PalModManager/releases/latest"
 INSTALLER_ASSET = "PalModManager-Setup.exe"
 
@@ -251,7 +251,7 @@ def _download_stream(dl_url: str,
                         f.write(chunk)
                         downloaded += len(chunk)
                         if progress:
-                            progress(downloaded, downloaded)
+                            progress(downloaded, 0)
             return out_path
 
         # 预分配文件，避免分段写入时不断扩张
