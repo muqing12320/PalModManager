@@ -20,7 +20,6 @@ pal-mod-manager/
 │   ├── installer.iss        # Inno Setup 安装脚本
 │   ├── install_inno.ps1     # 安装 Inno Setup
 │   └── download_cn_lang.ps1 # 下载简体中文语言文件（Inno Setup 不自带）
-├── version.json             # 旧版更新源（仅供切换前发布的旧客户端用，新版不再读）
 ├── resources/               # 应用图标、框架压缩包（UE4SS / PalSchema）
 ├── src/
 │   ├── backend/             # Flask API 层（供 WinUI 前端调用）
@@ -127,11 +126,11 @@ pal-mod-manager/
 2. 在 GitHub 建 tag `v<版本号>` 的 Release，上传该安装包，**asset 名必须保持 `PalModManager-Setup.exe`**（检查逻辑按这个名字取下载地址，名字不对就等于不推送更新）。
 3. 提交构建脚本改过版本号的 `updater.py` 与 `installer.iss`。
 
-不再需要改 `version.json`。`releases/latest` 会忽略 draft 与 prerelease，所以把 Release 存成草稿即是「暂不推送」，发布即生效。相比之前走 `raw.githubusercontent.com` 的 `version.json`（边缘缓存约 5 分钟，发完要等一阵才看得到），API 这条路径基本是即时的。
+仓库里已经没有 `version.json`，发版不需要改任何文件。`releases/latest` 会忽略 draft 与 prerelease，所以把 Release 存成草稿即是「暂不推送」，发布即生效。相比之前走 `raw.githubusercontent.com` 的更新源（边缘缓存约 5 分钟，发完要等一阵才看得到），API 这条路径基本是即时的。
 
 本地验证「有可用更新」：检查源是全局的 `releases/latest`，所以只能真实发一个更高的版本才能触发；本地改 `CURRENT_VERSION` 只会让结果偏向「已是最新」。建议流程：装一个较低版本的安装包 → 发一个更高版本 → 在旧版上点检查更新 → 应自动下载安装并静默升级后重启。
 
-> `version.json` 仅供本次改动之前发布的客户端使用，那些版本仍会读它。等确认没有用户停留在旧版本后即可删除；在此之前若要发新版，仍顺手把它更新到新版本号，否则老用户收不到更新提示。
+> `version.json` 已删除。在它之前发布、仍从该文件读取更新信息的客户端（1.3.2 及更早）此后检查更新会得到 404 并提示失败，只能手动重装升级；1.3.3 起的版本都走 releases API，不受影响。
 
 ### 测试 Mod 合集扫描
 
